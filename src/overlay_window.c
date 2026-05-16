@@ -29,6 +29,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 /* Windows SDK provides GL/gl.h via glfw3.h auto-include */
 #else
 /* Minimal GL 1.1 declarations (link with -lGL / OpenGL.framework) */
@@ -299,8 +301,6 @@ int overlay_window_init(const overlay_config_t *cfg) {
 
 #ifdef _WIN32
     /* Remove taskbar entry by switching to WS_EX_TOOLWINDOW */
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
     {
         HWND hwnd = glfwGetWin32Window(g_window);
         if (hwnd != NULL) {
@@ -470,12 +470,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"),
                            &g_config.max_visible_speakers, 1, 64,
                            "%d", ImGuiSliderFlags_None);
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
-                    LOC("启用后将无法用鼠标点击窗口。\n"
-                        "按 Ctrl+Shift+P 可关闭穿透。",
-                        "Cannot click the window once enabled.\n"
-                        "Press Ctrl+Shift+P to disable."));
-            }
 
             apply_config_to_window();
 
