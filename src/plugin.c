@@ -76,6 +76,38 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
     speaking_users_init();
     g_active_connection = -1;
 
+    /* Check if we are already connected to a server (plugin loaded after connection).
+     * This allows the overlay to appear immediately without waiting for a new connection. */
+    mumble_connection_t existing_conn;
+    mumble_error_t err = g_api.getActiveServerConnection(g_plugin_id, &existing_conn);
+    if (err == MUMBLE_STATUS_OK) {
+        bool synced = false;
+        err = g_api.isConnectionSynchronized(g_plugin_id, existing_conn, &synced);
+        if (err == MUMBLE_STATUS_OK && synced) {
+            g_active_connection = existing_conn;
+
+            char log_buf[128];
+            snprintf(log_buf, sizeof(log_buf),
+                     "Already connected to server (conn=%d) – starting overlay",
+                     (int)existing_conn);
+            g_api.log(g_plugin_id, log_buf);
+
+            if (!render_thread_is_running()) {
+                overlay_config_t cfg = overlay_config_default();
+                int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
+                if (rc != 0) {
+                    g_api.log(g_plugin_id, "Failed to start render thread for existing connection");
+                } else {
+                    g_api.log(g_plugin_id, "Overlay window started for existing connection");
+                }
+            }
+        }
+    } else {
+        /* No active connection – normal cold-start, render thread will be
+         * started in mumble_onServerSynchronized. */
+        g_api.log(g_plugin_id, "No active connection on init – waiting for server connect");
+    }
+
     return MUMBLE_STATUS_OK;
 }
 
