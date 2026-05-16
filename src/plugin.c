@@ -52,7 +52,7 @@ static int overlay_poll_speakers(void *userdata,
     (void)userdata;
 
     speaking_user_t buffer[64];
-    int count = speaking_users_get_active(buffer, 64, 5);  /* 5-second timeout */
+    int count = speaking_users_get_all(buffer, 64, 5);  /* 5-second timeout */
     if (count > max_count) count = max_count;
 
     for (int i = 0; i < count; i++) {
