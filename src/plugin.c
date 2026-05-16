@@ -96,6 +96,21 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
                      (int)existing_conn);
             g_api.log(g_plugin_id, log_buf);
 
+            /* Enumerate all users already on the server */
+            {
+                char name_buf[128];
+                mumble_userid_t *users = NULL;
+                size_t user_count = 0;
+                mumble_error_t uerr = g_api.getAllUsers(g_plugin_id, existing_conn, &users, &user_count);
+                if (uerr == MUMBLE_STATUS_OK && users != NULL) {
+                    for (size_t i = 0; i < user_count; i++) {
+                        const char *name = fetch_user_name(existing_conn, users[i], name_buf, sizeof(name_buf));
+                        speaking_users_upsert(users[i], name, SU_PASSIVE);
+                    }
+                    g_api.freeMemory(g_plugin_id, users);
+                }
+            }
+
             if (!render_thread_is_running()) {
                 overlay_config_t cfg = overlay_config_default();
                 int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
