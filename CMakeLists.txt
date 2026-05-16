@@ -35,6 +35,11 @@ if(EXISTS "${GLFW_ROOT}/CMakeLists.txt")
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # Linux CI 通常缺 wayland-scanner，只构建 X11
+    if(UNIX AND NOT APPLE)
+        set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+        set(GLFW_BUILD_X11     ON  CACHE BOOL "" FORCE)
+    endif()
     add_subdirectory(${GLFW_ROOT} EXCLUDE_FROM_ALL)
     set(GLFW_LIBRARIES glfw)
     set(GLFW_INCLUDE_DIR  "${GLFW_ROOT}/include")
@@ -60,10 +65,9 @@ set(IMGUI_CORE
     ${IMGUI_ROOT}/imgui_demo.cpp
 )
 
-# cimgui C 绑定
+# cimgui C 绑定 (不含 cimgui_impl.cpp — 它只做转发，会和后端重复声明)
 set(CIMGUI_BINDING
     ${CIMGUI_ROOT}/cimgui.cpp
-    ${CIMGUI_ROOT}/cimgui_impl.cpp
 )
 
 # 后端实现 (C++)
