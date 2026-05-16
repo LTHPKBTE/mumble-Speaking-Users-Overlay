@@ -7,16 +7,20 @@ Overlay plugin that displays a real-time list of users currently speaking on a M
 ## Features
 
 - Real-time display of talking / whispering / shouting users
+- Shows ALL users on the server (including idle ones)
 - Adjustable window transparency (Alpha) and text/UI opacity
 - Always on Top
 - Mouse passthrough mode — clicks pass through main overlay window, but settings panel remains interactive
 - Recent speakers first — sorting by speaking recency
 - Configurable visible count — limit shown speakers, scroll for the rest (default 8)
 - Show only talking users, or show all users with dimmed idle ones ("Show idle users" setting)
+- Configurable idle timeout — passive users are removed from list after N seconds (default 5)
 - Auto-snap to top — list returns to most recent speakers after 10s idle or passthrough
 - Screen edge clamping — window cannot be dragged off-screen
 - Automatic system language detection (English / Chinese)
 - No taskbar entry — won't clutter your taskbar
+- Window auto-sizes to fit content on first launch
+- Scale setting affects both font size and window size
 - Settings persist across restarts — window position, transparency, visible count, etc. are saved
 - Rendered with GLFW + Dear ImGui (cimgui)
 
@@ -41,12 +45,13 @@ Click the Settings button to open:
 | **Window opacity** | Slider to adjust window background opacity (0.0 ~ 1.0). Capped at 0.2 unless &#34;Allow risky opacity&#34; is checked |
 | **Text opacity** | Slider to adjust text and UI element opacity (0.0 ~ 1.0), also capped at 0.2 when dangerous mode is off |
 | **Allow risky opacity** | When unchecked, both window and text opacity cannot go below 0.2 |
-| **Scale** | Content scaling factor (0.5x ~ 2.0x) |
+| **Scale** | Content scaling factor (1.0x ~ 4.0x). Affects both font size and window dimensions |
 | **Always on top** | Keep window above other windows |
 | **Mouse passthrough** | Let mouse clicks pass through the main overlay window (the settings panel stays interactive) |
 | **Visible speakers** | Number of recent speakers shown at top (1~64) |
 | **Show idle users** | When checked, non-speaking users are shown dimmed in the list. When unchecked, only actively-speaking users appear |
 | **Idle user opacity** | Opacity for non-speaking users (0.0 ~ 1.0). Also capped at 0.2 when dangerous mode is off |
+| **Idle timeout (s)** | Seconds before a passive user is removed from the list (1~30). Default 5 |
 | **Show Window** (button) | Re-show a hidden window |
 | **Reset Position** (button) | Reset window position and size to defaults |
 | **Reset All Settings** (button) | Reset all settings to factory defaults |
@@ -75,7 +80,8 @@ When **Mouse passthrough** is enabled:
   - Mouse passthrough is enabled, or
   - The mouse has been away from the window for 10+ seconds.
   Once you manually scroll, auto-snap is suspended until the next idle period.
-- Idle users: When "Show idle users" is enabled, non-speaking (passive) users are displayed in the list with reduced opacity. Currently-idle users who were recently speaking remain visible so you can see who was just talking.
+- Idle users: When "Show idle users" is enabled, non-speaking (passive) users are displayed in the list with reduced opacity. All users on the server are shown (fetched via Mumble API on connect), so you can see the entire channel at a glance.
+- Idle timeout: Passive users are automatically removed from the list after N seconds of inactivity (configurable in Settings, default 5).
 
 ### If the Window Is Lost or Off-Screen
 

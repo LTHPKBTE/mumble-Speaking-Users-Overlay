@@ -834,7 +834,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             /* ---- Scale ---- */
             ImGui::SliderFloat(LOC("缩放", "Scale"), &g_config.window_scale,
-                          0.25f, 4.0f, "%.1f", ImGuiSliderFlags_None);
+                          1.0f, 4.0f, "%.1f", ImGuiSliderFlags_None);
             {
                 ImGuiIO& io = ImGui::GetIO();
                 io.FontGlobalScale = g_config.window_scale;
