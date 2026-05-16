@@ -22,6 +22,26 @@
 #include <string.h>
 #include <time.h>
 
+/* Log helper — only prints when mumble_logging_enabled is true */
+#define PLUGIN_LOG(msg) do { \
+    overlay_config_t _cfg; \
+    overlay_window_get_config(&_cfg); \
+    if (_cfg.mumble_logging_enabled) { \
+        g_api.log(g_plugin_id, msg); \
+    } \
+} while(0)
+
+/* Log with format string */
+#define PLUGIN_LOGF(fmt, ...) do { \
+    overlay_config_t _cfg; \
+    overlay_window_get_config(&_cfg); \
+    if (_cfg.mumble_logging_enabled) { \
+        char _buf[256]; \
+        snprintf(_buf, sizeof(_buf), fmt, __VA_ARGS__); \
+        g_api.log(g_plugin_id, _buf); \
+    } \
+} while(0)
+
 /* ========================================================================
  * Global state
  * ======================================================================== */
@@ -75,7 +95,7 @@ static int overlay_poll_speakers(void *userdata,
 mumble_error_t mumble_init(mumble_plugin_id_t id) {
     g_plugin_id = id;
 
-    g_api.log(g_plugin_id, "Plugin initialized");
+    PLUGIN_LOG("Plugin initialized");
 
     speaking_users_init();
     g_active_connection = -1;
@@ -90,11 +110,8 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
         if (err == MUMBLE_STATUS_OK && synced) {
             g_active_connection = existing_conn;
 
-            char log_buf[128];
-            snprintf(log_buf, sizeof(log_buf),
-                     "Already connected to server (conn=%d) – starting overlay",
+            PLUGIN_LOGF("Already connected to server (conn=%d) – starting overlay",
                      (int)existing_conn);
-            g_api.log(g_plugin_id, log_buf);
 
             /* Enumerate all users already on the server */
             {
@@ -115,23 +132,23 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
                 overlay_config_t cfg = overlay_config_default();
                 int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
                 if (rc != 0) {
-                    g_api.log(g_plugin_id, "Failed to start render thread for existing connection");
+                    PLUGIN_LOG("Failed to start render thread for existing connection");
                 } else {
-                    g_api.log(g_plugin_id, "Overlay window started for existing connection");
+                    PLUGIN_LOG("Overlay window started for existing connection");
                 }
             }
         }
     } else {
         /* No active connection – normal cold-start, render thread will be
          * started in mumble_onServerSynchronized. */
-        g_api.log(g_plugin_id, "No active connection on init – waiting for server connect");
+        PLUGIN_LOG("No active connection on init – waiting for server connect");
     }
 
     return MUMBLE_STATUS_OK;
 }
 
 void mumble_shutdown(void) {
-    g_api.log(g_plugin_id, "Plugin shutting down");
+    PLUGIN_LOG("Plugin shutting down");
 
     /* Stop render thread first */
     if (render_thread_is_running()) {
@@ -140,7 +157,7 @@ void mumble_shutdown(void) {
 
     speaking_users_destroy();
 
-    g_api.log(g_plugin_id, "Shutdown complete");
+    PLUGIN_LOG("Shutdown complete");
 }
 
 struct MumbleStringWrapper mumble_getName(void) {
@@ -212,10 +229,7 @@ uint32_t mumble_deactivateFeatures(uint32_t features) {
 void mumble_onServerConnected(mumble_connection_t connection) {
     g_active_connection = connection;
 
-    char log_buf[128];
-    snprintf(log_buf, sizeof(log_buf),
-             "Connected to server (conn=%d)", (int)connection);
-    g_api.log(g_plugin_id, log_buf);
+    PLUGIN_LOGF("Connected to server (conn=%d)", (int)connection);
 }
 
 void mumble_onServerDisconnected(mumble_connection_t connection) {
@@ -226,19 +240,13 @@ void mumble_onServerDisconnected(mumble_connection_t connection) {
 
     g_active_connection = -1;
 
-    char log_buf[128];
-    snprintf(log_buf, sizeof(log_buf),
-             "Disconnected from server (conn=%d)", (int)connection);
-    g_api.log(g_plugin_id, log_buf);
+    PLUGIN_LOGF("Disconnected from server (conn=%d)", (int)connection);
 }
 
 void mumble_onServerSynchronized(mumble_connection_t connection) {
     g_active_connection = connection;
 
-    char log_buf[128];
-    snprintf(log_buf, sizeof(log_buf),
-             "Server synchronized (conn=%d)", (int)connection);
-    g_api.log(g_plugin_id, log_buf);
+    PLUGIN_LOGF("Server synchronized (conn=%d)", (int)connection);
 
     /* Enumerate all users already on the server and add them as passive */
     {
@@ -260,9 +268,9 @@ void mumble_onServerSynchronized(mumble_connection_t connection) {
         overlay_config_t cfg = overlay_config_default();
         int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
         if (rc != 0) {
-            g_api.log(g_plugin_id, "Failed to start render thread");
+            PLUGIN_LOG("Failed to start render thread");
         } else {
-            g_api.log(g_plugin_id, "Overlay window started");
+            PLUGIN_LOG("Overlay window started");
         }
     }
 }

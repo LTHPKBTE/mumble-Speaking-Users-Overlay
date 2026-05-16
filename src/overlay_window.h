@@ -35,6 +35,7 @@ typedef struct {
     bool  show_idle_users;    /* show non-speaking users dimmed */
     float idle_user_alpha;    /* opacity for non-speaking users (0.0 – 1.0) */
     int   idle_timeout_seconds; /* seconds before a passive user is pruned from list */
+    bool  mumble_logging_enabled; /* whether to print log messages via MumbleAPI */
 } overlay_config_t;
 
 /* Get default configuration */

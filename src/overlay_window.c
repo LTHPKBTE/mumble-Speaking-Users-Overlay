@@ -179,6 +179,7 @@ overlay_config_t overlay_config_default(void) {
     cfg.show_idle_users   = true;
     cfg.idle_user_alpha   = 0.3f;
     cfg.idle_timeout_seconds = 5;
+    cfg.mumble_logging_enabled = true;
     return cfg;
 }
 
@@ -222,6 +223,7 @@ static void overlay_config_save(void) {
     fprintf(f, "show_idle_users=%d\n",  g_config.show_idle_users ? 1 : 0);
     fprintf(f, "idle_user_alpha=%.3f\n",(double)g_config.idle_user_alpha);
     fprintf(f, "idle_timeout_seconds=%d\n", g_config.idle_timeout_seconds);
+    fprintf(f, "mumble_logging_enabled=%d\n", g_config.mumble_logging_enabled ? 1 : 0);
     fclose(f);
 }
 
@@ -260,6 +262,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "show_idle_users=%d", &ival) == 1)   cfg->show_idle_users = (ival != 0);
         else if (sscanf(line, "idle_user_alpha=%f", &fval) == 1)   cfg->idle_user_alpha = fval;
         else if (sscanf(line, "idle_timeout_seconds=%d", &ival) == 1) cfg->idle_timeout_seconds = ival;
+        else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
     }
     fclose(f);
 }
@@ -301,6 +304,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.show_idle_users   = cfg->show_idle_users;
         g_config.idle_user_alpha   = cfg->idle_user_alpha;
         g_config.idle_timeout_seconds = cfg->idle_timeout_seconds;
+        g_config.mumble_logging_enabled = cfg->mumble_logging_enabled;
     }
     detect_system_language();
 
@@ -897,6 +901,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                            &g_config.idle_timeout_seconds, 1, 30,
                            "%d", ImGuiSliderFlags_None);
 
+            ImGui::Separator();
+
+            /* ---- Mumble logging ---- */
+            ImGui::Checkbox(LOC("在 Mumble 输出日志", "Log to Mumble console"),
+                           &g_config.mumble_logging_enabled);
+
             apply_config_to_window();
 
             ImGui::Separator();
@@ -935,6 +945,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.show_idle_users   = def.show_idle_users;
                 g_config.idle_user_alpha   = def.idle_user_alpha;
                 g_config.idle_timeout_seconds = def.idle_timeout_seconds;
+                g_config.mumble_logging_enabled = def.mumble_logging_enabled;
                 g_config.window_x = def.window_x;
                 g_config.window_y = def.window_y;
                 g_config.window_width = def.window_width;
