@@ -615,7 +615,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         }
     }
 
-    ImGui::Separator();
+    if (!g_config.mouse_passthrough) {
+        ImGui::Separator();
+    }
 
     /* ---- Speaking users list ---- */
     uint32_t user_ids[64];
@@ -804,14 +806,11 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         if (scale < 0.01f) scale = 1.0f;
         int target_h = (int)(content_h / scale + 0.5f);
         if (target_h < 40) target_h = 40;
-        int target_w = (int)(360.0f / scale + 0.5f);
-        if (target_w < 250) target_w = 250;
         int cur_w, cur_h;
         glfwGetWindowSize(g_window, &cur_w, &cur_h);
-        if (abs(target_h - cur_h) > 1 || abs(target_w - cur_w) > 1) {
-            glfwSetWindowSize(g_window, target_w, target_h);
-        }
-        g_config.window_width = target_w;
+        /* Let ImGui's AlwaysAutoResize handle width naturally */
+        glfwSetWindowSize(g_window, cur_w, target_h);
+        g_config.window_width = cur_w;
         g_config.window_height = target_h;
         g_first_frame = false;
     }
