@@ -512,8 +512,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             /* ---- Scale ---- */
             ImGui::SliderFloat(LOC("缩放", "Scale"), &g_config.window_scale,
                           0.25f, 4.0f, "%.1f", ImGuiSliderFlags_None);
-            ImGuiIO& io = ImGui::GetIO();
-            io.FontGlobalScale = g_config.window_scale;
+            { ImGuiIO& io = ImGui::GetIO();
+              io.FontGlobalScale = g_config.window_scale; }
 
             ImGui::Separator();
 
@@ -528,22 +528,11 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                         "按 Ctrl+Shift+P 可关闭穿透。",
                         "Cannot click the window once enabled.\n"
                         "Press Ctrl+Shift+P to disable."));
+            }
+
             ImGui::Separator();
 
-            /* ---- Show idle users ---- */
-            ImGui::Checkbox(LOC("显示未发言用户", "Show idle users"),
-                           &g_config.show_idle_users);
-            if (g_config.show_idle_users) {
-                ImGui::SliderFloat(LOC("未发言用户透明度", "Idle user opacity"),
-                               &g_config.idle_user_alpha, 0.0f, 1.0f, "%.2f",
-                               ImGuiSliderFlags_None);
-                if (g_config.idle_user_alpha < 0.2f && !g_config.dangerous_alpha_allowed) {
-                    g_config.idle_user_alpha = 0.2f;
-                }
-            }
-
-            }
-
+            /* ---- Visible speakers count ---- */
             ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"),
                            &g_config.max_visible_speakers, 1, 64,
                            "%d", ImGuiSliderFlags_None);
@@ -605,7 +594,10 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.window_height = def.window_height;
                 glfwSetWindowPos(g_window, g_config.window_x, g_config.window_y);
                 glfwSetWindowSize(g_window, g_config.window_width, g_config.window_height);
-                io.FontGlobalScale = g_config.window_scale;
+                {
+                    ImGuiIO& io_reset = ImGui::GetIO();
+                    io_reset.FontGlobalScale = g_config.window_scale;
+                }
                 if (g_window_hidden) {
                     g_window_hidden = false;
                     glfwShowWindow(g_window);
@@ -617,12 +609,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     "拖拽窗口顶部空白区域移动位置。",
                     "\"Reset All Settings\" | Restore defaults\n"
                     "Drag the top empty area of the window to move.") );
-        }
         ImGui::End();
-
-        if (!show) {
-            g_settings_open = false;
-        }
     }
 
     /* ================================================================
