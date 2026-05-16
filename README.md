@@ -39,6 +39,7 @@ Click the Settings button to open:
 | **Always on top** | Keep window above other windows |
 | **Mouse passthrough** | Let mouse clicks pass through the window |
 | **Visible speakers** | Number of recent speakers shown at top (1~64) |
+| **Reset Position** (button) | Reset window position and size to defaults |
 
 ### Keyboard Shortcuts
 
@@ -62,9 +63,10 @@ Click the Settings button to open:
 The window cannot be dragged off-screen — edge clamping keeps at least 20% of it visible on your monitor.
 
 If it's hidden:
-- Reconnect to the Mumble server — the overlay window will reappear automatically.
-- Or use Settings > Show Window (opens when the window is hidden).
-- Or press Ctrl+Shift+H to show a hidden window.
+- Use **Settings > Show Window** (appears when the window is hidden).
+- Or press `Ctrl+Shift+H` to show a hidden window.
+
+If the window is off-screen or mispositioned, use **Settings > Reset Position** to restore it to the default location.
 
 All configurable settings (position, size, transparency, passthrough, always-on-top, visible speakers count) are automatically saved to disk when Mumble exits and restored next time the plugin loads.
 
@@ -72,6 +74,12 @@ Saved config location:
 - Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
 - Linux:   `~/.config/mumble-overlay-plugin.cfg`
 - macOS:   `~/.config/mumble-overlay-plugin.cfg`
+
+## Prebuilt Binary
+
+You can download a prebuilt `.mumble_plugin` from the **Actions** tab of the GitHub repository. Look for the latest successful workflow run, scroll to **Artifacts**, and download `SpeakingUsersOverlay.mumble_plugin`. Double-click the file to install it into Mumble.
+
+> Prebuilt binaries are provided for convenience. It is strongly recommended to review the source code and build from source if you have any security concerns.
 
 ## Build
 
@@ -103,12 +111,23 @@ cmake --build build
 
 ### 4. Install to Mumble
 
-Copy the plugin binary to Mumble's `plugins/` directory, then enable it in Mumble's plugin manager.
+**Windows:**
+1. Create the folder `%APPDATA%\Mumble\Plugins` if it doesn't exist.
+2. Copy `build/Release/plugin.dll` into that folder.
+3. (Re)start Mumble — the plugin will load automatically.
+4. You can verify it's running in Mumble: **Settings > Plugins**.
 
-Or bundle as `.mumble_plugin`:
+**Linux / macOS:**
+1. Copy `build/libplugin.so` (Linux) or `build/libplugin.dylib` (macOS) to:
+   - Linux:   `~/.local/share/Mumble/Plugins/`
+   - macOS:   `~/Library/Application Support/Mumble/Plugins/`
+2. (Re)start Mumble.
+
+**Bundle as .mumble_plugin (portable):**
 ```bash
 zip SpeakingUsersOverlay.mumble_plugin plugin.dll manifest.xml
 ```
+Double-click the `.mumble_plugin` file to install.
 
 ## Architecture
 

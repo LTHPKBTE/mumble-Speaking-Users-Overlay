@@ -38,7 +38,8 @@
 | **透明度** | 滑动条调节窗口透明度 (0.1 ~ 1.0) |
 | **窗口置顶** | 保持窗口在其他窗口之上 |
 | **鼠标穿透** | 让鼠标点击穿透到窗口后方的程序 |
-| **可见发言人数** | 顶部显示的最远发言用户数 (1~64)
+| **可见发言人数** | 顶部显示的最远发言用户数 (1~64) |
+| **重置窗口位置**（按钮） | 将窗口位置和大小重置为默认值 |
 
 ### 键盘快捷键
 
@@ -62,9 +63,10 @@
 窗口有屏幕边缘吸附保护，不能被拖出屏幕外（至少 20% 宽度保留在显示器内）。
 
 如果窗口被隐藏了：
-- 重新连接 Mumble 服务器 — 覆盖窗口会自动重新出现。
-- 或者打开设置 > 显示窗口（窗口隐藏时才会显示该按钮）。
-- 或者按 Ctrl+Shift+H 快捷键。
+- 打开 **设置 > 显示窗口**（窗口隐藏时才会显示该按钮）。
+- 或者按 `Ctrl+Shift+H` 快捷键。
+
+如果窗口跑出屏幕或位置错乱，点击 **设置 > 重置窗口位置** 即可恢复到默认位置。
 
 所有可调节的配置（位置、大小、透明度、穿透模式、置顶、可见发言人数）会在 Mumble 退出时自动保存到磁盘，下次启动插件时自动恢复。
 
@@ -72,6 +74,12 @@
 - Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
 - Linux:   `~/.config/mumble-overlay-plugin.cfg`
 - macOS:   `~/.config/mumble-overlay-plugin.cfg`
+
+## 预构建二进制文件
+
+可以从 GitHub 仓库的 **Actions** 标签页下载预构建的 `.mumble_plugin` 文件。找到最近一次成功的构建，滚动到 **Artifacts** 部分，下载 `SpeakingUsersOverlay.mumble_plugin`，双击即可安装到 Mumble。
+
+> 预构建文件仅为了方便使用。如有安全顾虑，强烈建议审查源码并自行构建。
 
 ## 构建
 
@@ -103,12 +111,23 @@ cmake --build build
 
 ### 4. 安装到 Mumble
 
-将插件二进制文件复制到 Mumble 的 `plugins/` 目录，然后在 Mumble 插件管理器中启用。
+**Windows：**
+1. 创建文件夹 `%APPDATA%\Mumble\Plugins`（如果不存在）。
+2. 将 `build/Release/plugin.dll` 复制到该文件夹中。
+3. （重新）启动 Mumble — 插件会自动加载。
+4. 可在 Mumble 的 **设置 > 插件** 中确认插件已运行。
 
-或打包为 `.mumble_plugin`：
+**Linux / macOS：**
+1. 将 `build/libplugin.so`（Linux）或 `build/libplugin.dylib`（macOS）复制到：
+   - Linux:   `~/.local/share/Mumble/Plugins/`
+   - macOS:   `~/Library/Application Support/Mumble/Plugins/`
+2. （重新）启动 Mumble。
+
+**打包为 .mumble_plugin（便携式安装）：**
 ```bash
 zip SpeakingUsersOverlay.mumble_plugin plugin.dll manifest.xml
 ```
+双击 `.mumble_plugin` 文件即可安装。
 
 ## 架构
 
