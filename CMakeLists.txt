@@ -99,6 +99,9 @@ target_compile_definitions(cimgui PUBLIC
     IMGUI_DISABLE_DEMO_WINDOWS
 )
 
+# Required for linking cimgui into a shared library (Linux)
+set_target_properties(cimgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 if(WIN32)
     target_link_libraries(cimgui PUBLIC opengl32)
     target_compile_definitions(cimgui PRIVATE

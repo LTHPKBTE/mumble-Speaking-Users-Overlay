@@ -64,11 +64,11 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Upload libplugin.so
+      - name: Upload plugin.so
         uses: actions/upload-artifact@v4
         with:
           name: plugin-linux-x64
-          path: build/libplugin.so
+          path: build/plugin.so
           if-no-files-found: error
 
   # ==============================================================
@@ -89,11 +89,11 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Upload libplugin.dylib
+      - name: Upload plugin.dylib
         uses: actions/upload-artifact@v4
         with:
           name: plugin-macos-x64
-          path: build/libplugin.dylib
+          path: build/plugin.dylib
           if-no-files-found: error
 
   # ==============================================================
@@ -121,11 +121,11 @@ jobs:
           cp manifest.xml release/
           # Copy platform binaries
           cp artifacts/plugin-windows-x64/plugin.dll    release/plugin.dll    2>/dev/null || true
-          cp artifacts/plugin-linux-x64/libplugin.so    release/libplugin.so  2>/dev/null || true
-          cp artifacts/plugin-macos-x64/libplugin.dylib release/libplugin.dylib 2>/dev/null || true
+          cp artifacts/plugin-linux-x64/plugin.so    release/plugin.so  2>/dev/null || true
+          cp artifacts/plugin-macos-x64/plugin.dylib release/plugin.dylib 2>/dev/null || true
           # Create .mumble_plugin zip
           cd release
-          zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll libplugin.so libplugin.dylib 2>/dev/null || true
+          zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll plugin.so plugin.dylib 2>/dev/null || true
           cd ..
 
       - name: Create GitHub Release
@@ -134,8 +134,8 @@ jobs:
           files: |
             SpeakingUsersOverlay.mumble_plugin
             artifacts/plugin-windows-x64/plugin.dll
-            artifacts/plugin-linux-x64/libplugin.so
-            artifacts/plugin-macos-x64/libplugin.dylib
+            artifacts/plugin-linux-x64/plugin.so
+            artifacts/plugin-macos-x64/plugin.dylib
           body: |
             ## Installation
             1. Download `SpeakingUsersOverlay.mumble_plugin`
