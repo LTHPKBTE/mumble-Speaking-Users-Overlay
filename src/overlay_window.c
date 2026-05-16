@@ -79,6 +79,13 @@ static bool             g_user_saw_speaking_after_hide = false;
 static volatile bool    g_request_show          = false;
 static volatile bool    g_request_reset_position = false;
 
+/* ---- User list scrolling / activity state ---- */
+static double  g_last_mouse_activity_time = 0.0; /* ImGui::GetTime() of last hover/scroll */
+static bool    g_scrolled_by_user         = false; /* user manually scrolled */
+static float   g_last_scroll_y            = 0.0f;  /* last known scroll position */
+static uint32_t g_user_timestamps[64];      /* ordered user IDs by speaking recency */
+static int     g_user_timestamp_count     = 0;
+
 /* ---- Forward declarations ---- */
 static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
@@ -153,6 +160,7 @@ overlay_config_t overlay_config_default(void) {
     cfg.alpha             = 0.85f;
     cfg.mouse_passthrough = false;
     cfg.always_on_top     = true;
+    cfg.max_visible_speakers = 8;
     return cfg;
 }
 
@@ -190,6 +198,7 @@ static void overlay_config_save(void) {
     fprintf(f, "alpha=%.3f\n",         (double)g_config.alpha);
     fprintf(f, "mouse_passthrough=%d\n", g_config.mouse_passthrough ? 1 : 0);
     fprintf(f, "always_on_top=%d\n",   g_config.always_on_top ? 1 : 0);
+    fprintf(f, "max_visible_speakers=%d\n", g_config.max_visible_speakers);
     fclose(f);
 }
 
@@ -219,6 +228,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "alpha=%f", &fval) == 1)           cfg->alpha = fval;
         else if (sscanf(line, "mouse_passthrough=%d", &ival) == 1) cfg->mouse_passthrough = (ival != 0);
         else if (sscanf(line, "always_on_top=%d", &ival) == 1)   cfg->always_on_top = (ival != 0);
+        else if (sscanf(line, "max_visible_speakers=%d", &ival) == 1) cfg->max_visible_speakers = ival;
     }
     fclose(f);
 }
@@ -250,6 +260,8 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.alpha             = cfg->alpha;
         g_config.mouse_passthrough = cfg->mouse_passthrough;
         g_config.always_on_top     = cfg->always_on_top;
+        if (cfg->max_visible_speakers > 0)
+            g_config.max_visible_speakers = cfg->max_visible_speakers;
     }
     detect_system_language();
 
@@ -455,6 +467,16 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                         "Press Ctrl+Shift+P to disable."));
             }
 
+            ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"),
+                           &g_config.max_visible_speakers, 1, 64,
+                           "%d", ImGuiSliderFlags_None);
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
+                    LOC("启用后将无法用鼠标点击窗口。\n"
+                        "按 Ctrl+Shift+P 可关闭穿透。",
+                        "Cannot click the window once enabled.\n"
+                        "Press Ctrl+Shift+P to disable."));
+            }
+
             apply_config_to_window();
 
             ImGui::Separator();
@@ -518,11 +540,52 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), LOC("说话列表", "Speaking Users"));
 
-        /* Make the title area draggable */
+        /* Make the title area draggable — with screen edge clamping */
         if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             ImVec2 delta = ImGui::GetIO().MouseDelta;
             int new_x = g_config.window_x + (int)delta.x;
             int new_y = g_config.window_y + (int)delta.y;
+
+            /* Clamp to screen edges */
+            int fb_x, fb_y, fb_w, fb_h;
+            glfwGetWindowPos(g_window, &fb_x, &fb_y);
+            glfwGetWindowSize(g_window, &fb_w, &fb_h);
+            GLFWmonitor *monitor = glfwGetWindowMonitor(g_window);
+            if (!monitor) {
+                /* Find the monitor the window is currently on */
+                int mon_count;
+                GLFWmonitor **mons = glfwGetMonitors(&mon_count);
+                int best_area = -1;
+                for (int mi = 0; mi < mon_count; mi++) {
+                    int mx, my, mw, mh;
+                    glfwGetMonitorWorkarea(mons[mi], &mx, &my, &mw, &mh);
+                    /* Intersection area between window and monitor */
+                    int ix = (new_x > mx + mw) ? 0 : ((new_x + fb_w < mx) ? 0 :
+                             (new_x < mx ? mx : new_x));
+                    int iy = (new_y > my + mh) ? 0 : ((new_y + fb_h < my) ? 0 :
+                             (new_y < my ? my : new_y));
+                    int iw = (new_x + fb_w > mx + mw ? mx + mw : new_x + fb_w) - ix;
+                    int ih = (new_y + fb_h > my + mh ? my + mh : new_y + fb_h) - iy;
+                    int area = iw * ih;
+                    if (area > best_area) {
+                        best_area = area;
+                        monitor = mons[mi];
+                    }
+                }
+            }
+            if (monitor) {
+                int mx, my, mw, mh;
+                glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
+                /* Keep at least 20% of the window on-screen */
+                int min_visible = fb_w / 5;
+                if (new_x + min_visible < mx) new_x = mx - min_visible;
+                if (new_x + fb_w - min_visible > mx + mw) new_x = mx + mw - fb_w + min_visible;
+                if (new_y < my) new_y = my;
+                if (new_y + 20 > my + mh) new_y = my + mh - 20;
+            }
+
+            g_config.window_x = new_x;
+            g_config.window_y = new_y;
             glfwSetWindowPos(g_window, new_x, new_y);
         }
         if (ImGui::IsItemHovered()) {
@@ -563,6 +626,56 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     int      states[64];
     int user_count = poll ? poll(userdata, user_ids, names, states, 64) : 0;
 
+    /* ---- Track speaking recency — update timestamp order ---- */
+    {
+        double now = ImGui::GetTime();
+        for (int i = 0; i < user_count; i++) {
+            /* Find this user in existing timestamps; if not found, append */
+            int found = -1;
+            for (int j = 0; j < g_user_timestamp_count; j++) {
+                if (g_user_timestamps[j] == user_ids[i]) { found = j; break; }
+            }
+            if (found < 0) {
+                /* New speaker — add at end, will bubble up */
+                if (g_user_timestamp_count < 64) {
+                    g_user_timestamps[g_user_timestamp_count++] = user_ids[i];
+                    found = g_user_timestamp_count - 1;
+                }
+            }
+            /* Move this user to the front (most recent) */
+            if (found > 0) {
+                uint32_t tmp = g_user_timestamps[found];
+                memmove(&g_user_timestamps[1], &g_user_timestamps[0],
+                        (size_t)found * sizeof(uint32_t));
+                g_user_timestamps[0] = tmp;
+            }
+        }
+    }
+
+    /* ---- Build sorted display order: recently-active first ---- */
+    int  display_idx[64];
+    int  display_count = 0;
+    {
+        bool used[64] = {false};
+        /* First, walk timestamp order to pick up active speakers */
+        for (int t = 0; t < g_user_timestamp_count && display_count < user_count; t++) {
+            for (int i = 0; i < user_count; i++) {
+                if (!used[i] && user_ids[i] == g_user_timestamps[t]) {
+                    used[i] = true;
+                    display_idx[display_count++] = i;
+                    break;
+                }
+            }
+        }
+        /* Any remaining active speakers not in timestamp list (shouldn't happen) */
+        for (int i = 0; i < user_count && display_count < user_count; i++) {
+            if (!used[i]) {
+                used[i] = true;
+                display_idx[display_count++] = i;
+            }
+        }
+    }
+
     /* ---- Auto-show window when users start speaking ---- */
     if (g_window_hidden && user_count > 0) {
         if (!g_user_saw_speaking_after_hide) {
@@ -574,11 +687,54 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         g_user_saw_speaking_after_hide = false;
     }
 
+    /* ---- Determine whether to snap scroll to top ---- */
+    bool should_snap_to_top = false;
+    /* Track mouse hover/activity */
+    bool mouse_hovering = ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
+    if (mouse_hovering || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused()) {
+        g_last_mouse_activity_time = ImGui::GetTime();
+    }
+    /* Auto-snap: passthrough mode active, OR mouse left window >10s without manual scroll */
+    double idle_seconds = ImGui::GetTime() - g_last_mouse_activity_time;
+    if (g_config.mouse_passthrough || idle_seconds > 10.0) {
+        if (!g_scrolled_by_user) {
+            should_snap_to_top = true;
+        }
+    } else {
+        /* User is active — don't snap; reset scroll-override flag */
+        g_scrolled_by_user = false;
+    }
+
     if (user_count == 0) {
         ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f),
                       LOC("  当前没人说话...", "  Nobody is speaking..."));
     } else {
-        for (int i = 0; i < user_count; i++) {
+        /* ---- Scrollable speaker list ---- */
+        float avail_h = ImGui::GetContentRegionAvail().y;
+        if (avail_h < 30.0f) avail_h = 30.0f;
+        ImGui::BeginChild("SpeakerList", ImVec2(0, avail_h), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+
+        /* Handle scroll snapping */
+        if (should_snap_to_top) {
+            ImGui::SetScrollHereY(0.0f);
+        } else {
+            /* Detect user-initiated scroll */
+            float cur_scroll = ImGui::GetScrollY();
+            if (cur_scroll != g_last_scroll_y && cur_scroll > 0.0f) {
+                if (!g_scrolled_by_user) {
+                    g_scrolled_by_user = true;
+                }
+                g_last_mouse_activity_time = ImGui::GetTime();
+            }
+            g_last_scroll_y = cur_scroll;
+        }
+
+        int max_vis = g_config.max_visible_speakers;
+        int pinned_count = (display_count < max_vis) ? display_count : max_vis;
+
+        for (int di = 0; di < display_count; di++) {
+            int i = display_idx[di];
             ImVec4 col;
             const char *status_text;
             switch (states[i]) {
@@ -600,15 +756,32 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     break;
             }
 
+            /* Recent speakers section header (first pinned_count) */
+            if (di == pinned_count) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f),
+                    "%s", LOC("---------- 更多 ----------", "--- more ---"));
+            }
+
+            /* Dimmed style for overflow speakers */
+            bool is_pinned = (di < pinned_count);
+            ImVec4 name_col = col;
+            if (!is_pinned) {
+                name_col.w *= 0.7f;
+            }
+
             /* User row: colored bullet + name, status aligned right */
-            ImGui::TextColored(col, "  \xe2\x97\x8f  %s", names[i]);
+            ImGui::TextColored(name_col, "  \xe2\x97\x8f  %s", names[i]);
 
             ImGui::SameLine(0.0f, -1.0f);
             float px = ImGui::GetCursorPosX();
             ImVec2 av = ImGui::GetContentRegionAvail();
             ImGui::SetCursorPosX(px + av.x - 60.0f);
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", status_text);
+            ImVec4 st_col = ImVec4(0.5f, 0.5f, 0.5f, is_pinned ? 1.0f : 0.5f);
+            ImGui::TextColored(st_col, "%s", status_text);
         }
+
+        ImGui::EndChild();
     }
 
     ImGui::End();
