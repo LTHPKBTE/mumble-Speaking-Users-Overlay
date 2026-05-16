@@ -71,7 +71,7 @@ static int overlay_poll_speakers(void *userdata,
 mumble_error_t mumble_init(mumble_plugin_id_t id) {
     g_plugin_id = id;
 
-    g_api.log(g_plugin_id, "[SpeakingOverlay] Plugin initialized");
+    g_api.log(g_plugin_id, "Plugin initialized");
 
     speaking_users_init();
     g_active_connection = -1;
@@ -80,7 +80,7 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
 }
 
 void mumble_shutdown(void) {
-    g_api.log(g_plugin_id, "[SpeakingOverlay] Plugin shutting down");
+    g_api.log(g_plugin_id, "Plugin shutting down");
 
     /* Stop render thread first */
     if (render_thread_is_running()) {
@@ -89,7 +89,7 @@ void mumble_shutdown(void) {
 
     speaking_users_destroy();
 
-    g_api.log(g_plugin_id, "[SpeakingOverlay] Shutdown complete");
+    g_api.log(g_plugin_id, "Shutdown complete");
 }
 
 struct MumbleStringWrapper mumble_getName(void) {
@@ -163,7 +163,7 @@ void mumble_onServerConnected(mumble_connection_t connection) {
 
     char log_buf[128];
     snprintf(log_buf, sizeof(log_buf),
-             "[SpeakingOverlay] Connected to server (conn=%d)", (int)connection);
+             "Connected to server (conn=%d)", (int)connection);
     g_api.log(g_plugin_id, log_buf);
 }
 
@@ -177,7 +177,7 @@ void mumble_onServerDisconnected(mumble_connection_t connection) {
 
     char log_buf[128];
     snprintf(log_buf, sizeof(log_buf),
-             "[SpeakingOverlay] Disconnected from server (conn=%d)", (int)connection);
+             "Disconnected from server (conn=%d)", (int)connection);
     g_api.log(g_plugin_id, log_buf);
 }
 
@@ -186,7 +186,7 @@ void mumble_onServerSynchronized(mumble_connection_t connection) {
 
     char log_buf[128];
     snprintf(log_buf, sizeof(log_buf),
-             "[SpeakingOverlay] Server synchronized (conn=%d)", (int)connection);
+             "Server synchronized (conn=%d)", (int)connection);
     g_api.log(g_plugin_id, log_buf);
 
     /* Start render thread when we first connect */
@@ -194,9 +194,9 @@ void mumble_onServerSynchronized(mumble_connection_t connection) {
         overlay_config_t cfg = overlay_config_default();
         int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
         if (rc != 0) {
-            g_api.log(g_plugin_id, "[SpeakingOverlay] Failed to start render thread");
+            g_api.log(g_plugin_id, "Failed to start render thread");
         } else {
-            g_api.log(g_plugin_id, "[SpeakingOverlay] Overlay window started");
+            g_api.log(g_plugin_id, "Overlay window started");
         }
     }
 }
