@@ -166,6 +166,10 @@ overlay_config_t overlay_config_default(void) {
     cfg.always_on_top     = true;
     cfg.max_visible_speakers = 8;
     cfg.dangerous_alpha_allowed = false;
+    cfg.show_idle_users   = true;
+    cfg.idle_user_alpha   = 0.3f;
+    cfg.show_idle_users   = true;
+    cfg.idle_user_alpha   = 0.3f;
     return cfg;
 }
 
@@ -204,8 +208,12 @@ static void overlay_config_save(void) {
     fprintf(f, "text_alpha=%.3f\n",    (double)g_config.text_alpha);
     fprintf(f, "window_scale=%.3f\n",  (double)g_config.window_scale);
     fprintf(f, "mouse_passthrough=%d\n", g_config.mouse_passthrough ? 1 : 0);
+    fprintf(f, "show_idle_users=%d\n",  g_config.show_idle_users ? 1 : 0);
+    fprintf(f, "idle_user_alpha=%.3f\n",(double)g_config.idle_user_alpha);
     fprintf(f, "always_on_top=%d\n",   g_config.always_on_top ? 1 : 0);
     fprintf(f, "max_visible_speakers=%d\n", g_config.max_visible_speakers);
+    fprintf(f, "show_idle_users=%d\n",  g_config.show_idle_users ? 1 : 0);
+    fprintf(f, "idle_user_alpha=%.3f\n",(double)g_config.idle_user_alpha);
     fclose(f);
 }
 
@@ -235,10 +243,14 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "alpha=%f", &fval) == 1)           cfg->alpha = fval;
         else if (sscanf(line, "text_alpha=%f", &fval) == 1)      cfg->text_alpha = fval;
         else if (sscanf(line, "window_scale=%f", &fval) == 1)    cfg->window_scale = fval;
+        else if (sscanf(line, "show_idle_users=%d", &ival) == 1)   cfg->show_idle_users = (ival != 0);
+        else if (sscanf(line, "idle_user_alpha=%f", &fval) == 1)   cfg->idle_user_alpha = fval;
         else if (sscanf(line, "mouse_passthrough=%d", &ival) == 1) cfg->mouse_passthrough = (ival != 0);
         else if (sscanf(line, "always_on_top=%d", &ival) == 1)   cfg->always_on_top = (ival != 0);
         else if (sscanf(line, "max_visible_speakers=%d", &ival) == 1) cfg->max_visible_speakers = ival;
         else if (sscanf(line, "dangerous_alpha_allowed=%d", &ival) == 1) cfg->dangerous_alpha_allowed = (ival != 0);
+        else if (sscanf(line, "show_idle_users=%d", &ival) == 1)   cfg->show_idle_users = (ival != 0);
+        else if (sscanf(line, "idle_user_alpha=%f", &fval) == 1)   cfg->idle_user_alpha = fval;
     }
     fclose(f);
 }
@@ -269,12 +281,16 @@ int overlay_window_init(const overlay_config_t *cfg) {
         /* Always honor explicitly-set boolean/float overrides */
         g_config.alpha             = cfg->alpha;
         g_config.text_alpha        = cfg->text_alpha;
+        g_config.show_idle_users   = cfg->show_idle_users;
+        g_config.idle_user_alpha   = cfg->idle_user_alpha;
         g_config.window_scale      = cfg->window_scale;
         g_config.mouse_passthrough = cfg->mouse_passthrough;
         g_config.always_on_top     = cfg->always_on_top;
         if (cfg->max_visible_speakers > 0)
             g_config.max_visible_speakers = cfg->max_visible_speakers;
         g_config.dangerous_alpha_allowed = cfg->dangerous_alpha_allowed;
+        g_config.show_idle_users   = cfg->show_idle_users;
+        g_config.idle_user_alpha   = cfg->idle_user_alpha;
     }
     detect_system_language();
 
@@ -387,18 +403,14 @@ static void on_window_close(GLFWwindow *win) {
 
 /* ========================================================================
  * Apply current config to the GLFW window
- * ======================================================================== */
-static void apply_config_to_window(void) {
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.Alpha = g_config.text_alpha;
+    /* Note: mouse_passthrough is implemented at the ImGui level (NoInputs flag)
+     *       instead of GLFW_MOUSE_PASSTHROUGH so the settings window remains usable. */yle.Alpha = g_config.text_alpha;
     style.Colors[ImGuiCol_WindowBg].w = g_config.alpha;
 
     glfwSetWindowAttrib(g_window, GLFW_FLOATING,
                         g_config.always_on_top ? GLFW_TRUE : GLFW_FALSE);
-#ifdef _WIN32
-    glfwSetWindowAttrib(g_window, GLFW_MOUSE_PASSTHROUGH,
-                        g_config.mouse_passthrough ? GLFW_TRUE : GLFW_FALSE);
-#endif
+    /* Note: mouse_passthrough is implemented at the ImGui level (NoInputs flag)
+     *       instead of GLFW_MOUSE_PASSTHROUGH so the settings window remains usable. */
 }
 
 /* ========================================================================
@@ -462,37 +474,37 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         }
     }
     /* ================================================================
-     * Settings panel (separate floating window)
-     * ================================================================ */
-    if (g_settings_open) {
-        ImGui::SetNextWindowSize(ImVec2(280, 340), ImGuiCond_FirstUseEver);
-        bool show = true;
-        if (ImGui::Begin(LOC("设置", "Settings"), &show, ImGuiWindowFlags_None)) {
-            /* ---- Window transparency ---- */
+     * Settings panel (sepa+ Text transparency ---- */
             float a = g_config.alpha;
             ImGui::SliderFloat(LOC("窗口透明度", "Window opacity"), &a,
                           0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
-
-            /* Safety: prevent dangerous transparency unless allowed */
-            bool alpha_was_low = (a < 0.2f);
-            if (alpha_was_low && !g_config.dangerous_alpha_allowed) {
-                a = 0.2f;
-            }
-            g_config.alpha = a;
-
-            /* ---- Text / UI opacity ---- */
-            ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &g_config.text_alpha,
+            float ta = g_config.text_alpha;
+            ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &ta,
                           0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
 
-            /* ---- Allow dangerous transparency ---- */
+            /* Safety: cap both if dangerous not allowed */
+            bool any_low = (a < 0.2f || ta < 0.2f);
+            if (any_low && !g_config.dangerous_alpha_allowed) {
+                if (a < 0.2f) a = 0.2f;
+                if (ta < 0.2f) ta = 0.2f;
+            }
+            g_config.alpha = a;
+            g_config.text_alpha = ta;
+
             ImGui::Checkbox(LOC("允许危险透明度", "Allow risky opacity"),
                            &g_config.dangerous_alpha_allowed);
-            if (alpha_was_low && !g_config.dangerous_alpha_allowed) {
+            if (any_low && !g_config.dangerous_alpha_allowed) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
-                    LOC("透明度不低于 0.2。\n"
-                        "勾选「允许危险透明度」后可调低。",
-                        "Opacity capped at 0.2 minimum.\n"
-                        "Check 'Allow risky opacity' to go lower."));
+                    LOC("窗口和文字透明度不低于 0.2。\n"
+                        "勾选后可调低。",
+                        "Window & text opacity capped at 0.2.\n"
+                        "Check to allow lower values
+            if (any_low && !g_config.dangerous_alpha_allowed) {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
+                    LOC("窗口和文字透明度不低于 0.2。\n"
+                        "勾选后可调低。",
+                        "Window & text opacity capped at 0.2.\n"
+                        "Check to allow lower values."));
             }
 
             ImGui::Separator();
@@ -516,11 +528,39 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                         "按 Ctrl+Shift+P 可关闭穿透。",
                         "Cannot click the window once enabled.\n"
                         "Press Ctrl+Shift+P to disable."));
+            ImGui::Separator();
+
+            /* ---- Show idle users ---- */
+            ImGui::Checkbox(LOC("显示未发言用户", "Show idle users"),
+                           &g_config.show_idle_users);
+            if (g_config.show_idle_users) {
+                ImGui::SliderFloat(LOC("未发言用户透明度", "Idle user opacity"),
+                               &g_config.idle_user_alpha, 0.0f, 1.0f, "%.2f",
+                               ImGuiSliderFlags_None);
+                if (g_config.idle_user_alpha < 0.2f && !g_config.dangerous_alpha_allowed) {
+                    g_config.idle_user_alpha = 0.2f;
+                }
+            }
+
             }
 
             ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"),
                            &g_config.max_visible_speakers, 1, 64,
                            "%d", ImGuiSliderFlags_None);
+
+            ImGui::Separator();
+
+            /* ---- Show idle users ---- */
+            ImGui::Checkbox(LOC("显示未发言用户", "Show idle users"),
+                           &g_config.show_idle_users);
+            if (g_config.show_idle_users) {
+                ImGui::SliderFloat(LOC("未发言用户透明度", "Idle user opacity"),
+                               &g_config.idle_user_alpha, 0.0f, 1.0f, "%.2f",
+                               ImGuiSliderFlags_None);
+                if (g_config.idle_user_alpha < 0.2f && !g_config.dangerous_alpha_allowed) {
+                    g_config.idle_user_alpha = 0.2f;
+                }
+            }
 
             apply_config_to_window();
 
@@ -557,6 +597,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.always_on_top     = def.always_on_top;
                 g_config.max_visible_speakers = def.max_visible_speakers;
                 g_config.dangerous_alpha_allowed = def.dangerous_alpha_allowed;
+                g_config.show_idle_users   = def.show_idle_users;
+                g_config.idle_user_alpha   = def.idle_user_alpha;
                 g_config.window_x = def.window_x;
                 g_config.window_y = def.window_y;
                 g_config.window_width = def.window_width;
@@ -600,15 +642,22 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                                 | ImGuiWindowFlags_NoBringToFrontOnFocus
                                 | ImGuiWindowFlags_NoSavedSettings;
 
+    /* When mouse passthrough is active, make main panel non-interactive
+     * so clicks fall through to windows behind. The settings window is
+     * separate and remains interactive. */
+    if (g_config.mouse_passthrough) {
+        main_flags |= ImGuiWindowFlags_NoInputs;
+    }
+
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
     ImGui::Begin("SpeakingOverlayMain", NULL, main_flags);
     ImGui::PopStyleVar();
 
     /* ================================================================
-     * Custom title bar — full-width draggable area
+     * Custom title bar — full-width draggable area (hidden in passthrough)
      * ================================================================ */
-    {
-        /* Use an invisible button that spans the whole width for dragging */
+    if (!g_config.mouse_passthrough) {
+        /* Full-width drag handle + buttons (hidden when passthrough is active) */
         float title_h = ImGui::GetFrameHeight() + 4.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
 
@@ -820,6 +869,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
         for (int di = 0; di < display_count; di++) {
             int i = display_idx[di];
+
+            /* Skip passive/muted users if show_idle_users is off */
+            bool is_idle = (states[i] == 0 || states[i] == 4);
+            if (is_idle && !g_config.show_idle_users) {
+                continue;
+            }
+
             ImVec4 col;
             const char *status_text;
             switch (states[i]) {
@@ -837,7 +893,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     break;
                 default:
                     col = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-                    status_text = "";
+                    status_text = LOC("空闲", "Idle");
                     break;
             }
 
@@ -855,6 +911,11 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 name_col.w *= 0.7f;
             }
 
+            /* Apply idle user dimming */
+            if (is_idle) {
+                name_col.w *= g_config.idle_user_alpha;
+            }
+
             /* User row: colored bullet + name, status aligned right */
             ImGui::TextColored(name_col, "  \xe2\x97\x8f  %s", names[i]);
 
@@ -863,6 +924,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImVec2 av = ImGui::GetContentRegionAvail();
             ImGui::SetCursorPosX(px + av.x - 60.0f);
             ImVec4 st_col = ImVec4(0.5f, 0.5f, 0.5f, is_pinned ? 1.0f : 0.5f);
+            if (is_idle) {
+                st_col.w *= g_config.idle_user_alpha;
+            }
             ImGui::TextColored(st_col, "%s", status_text);
         }
 

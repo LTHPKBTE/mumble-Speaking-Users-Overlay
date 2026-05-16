@@ -25,13 +25,15 @@ typedef struct {
     int   window_y;
     int   window_width;
     int   window_height;
-    float alpha;              /* global transparency (0.0 – 1.0) */
+    float alpha;              /* window background transparency (0.0 – 1.0) */
     float text_alpha;         /* text / UI element alpha (0.0 – 1.0) */
     float window_scale;       /* content scale factor (0.25 – 4.0) */
-    bool  mouse_passthrough;  /* whether clicks pass through the window */
+    bool  mouse_passthrough;  /* whether clicks pass through the main overlay (not settings) */
     bool  always_on_top;      /* window stays on top of others */
     int   max_visible_speakers; /* max "recent" speakers shown at top before scroll */
     bool  dangerous_alpha_allowed; /* allow alpha below 0.2 */
+    bool  show_idle_users;    /* show non-speaking users dimmed */
+    float idle_user_alpha;    /* opacity for non-speaking users (0.0 – 1.0) */
 } overlay_config_t;
 
 /* Get default configuration */
