@@ -53,12 +53,20 @@ void speaking_users_destroy(void);
 void speaking_users_upsert(uint32_t user_id, const char *name, su_talking_state_t state);
 
 /*
- * Get a snapshot of currently active speakers.
+ * Get a snapshot of currently active speakers (non-passive, non-muted).
  * Returns number of speakers written to `out_array`, up to `max_count`.
  * Callable from render thread.
  * Users inactive longer than `timeout_seconds` are pruned.
  */
 int speaking_users_get_active(speaking_user_t *out_array, int max_count, int timeout_seconds);
+
+/*
+ * Get ALL known users (including passive/muted).
+ * Returns number of users written to `out_array`, up to `max_count`.
+ * Callable from render thread.
+ * Users inactive longer than `timeout_seconds` are pruned.
+ */
+int speaking_users_get_all(speaking_user_t *out_array, int max_count, int timeout_seconds);
 
 /*
  * Mark all users as passive (e.g. on disconnect).

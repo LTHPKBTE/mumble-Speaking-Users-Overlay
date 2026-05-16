@@ -131,3 +131,39 @@ void speaking_users_clear(void) {
     }
     LOCK_REL();
 }
+
+int speaking_users_get_all(speaking_user_t *out_array, int max_count, int timeout_seconds) {
+    int count = 0;
+    time_t now = time(NULL);
+
+    LOCK_ACQ();
+    speaking_user_t *prev = NULL;
+    speaking_user_t *cur = g_head;
+
+    while (cur != NULL) {
+        speaking_user_t *next = cur->next;
+
+        /* Prune expired entries (same as get_active) */
+        if ((cur->state == SU_PASSIVE || cur->state == SU_TALKING_MUTED)
+            && (now - cur->last_update) > timeout_seconds) {
+            if (prev != NULL) {
+                prev->next = next;
+            } else {
+                g_head = next;
+            }
+            free(cur);
+            cur = next;
+            continue;
+        }
+
+        /* Collect ALL users (including passive/muted) */
+        if (count < max_count) {
+            out_array[count++] = *cur;
+        }
+        prev = cur;
+        cur = next;
+    }
+    LOCK_REL();
+
+    return count;
+}
