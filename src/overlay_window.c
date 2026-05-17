@@ -786,7 +786,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 is_interactive_hovered = true;
             }
         }
-        }
 
         if (!g_config.mouse_passthrough) ImGui::Separator();
 
@@ -819,7 +818,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 child_flags |= ImGuiWindowFlags_NoScrollbar;
             }
 
-            ImGui::BeginChild("SpeakerList", ImVec2(max_w, child_h), false, child_flags);
+            ImGui::BeginChild("SpeakerList", ImVec2(max_w, child_h), ImGuiChildFlags_None, child_flags);
 
             if (should_snap_to_top) {
                 ImGui::SetScrollHereY(0.0f);
