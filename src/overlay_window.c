@@ -958,9 +958,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             float ta = g_config.text_alpha;
             ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &ta, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
 
-            bool any_low = (a < 0.2f || ta < 0.2f);
+            // Dangerous alpha cap only applies to text alpha; window alpha is always free
+            bool any_low = (ta < 0.2f);
             if (any_low && !g_config.dangerous_alpha_allowed) {
-                if (a < 0.2f) a = 0.2f;
                 if (ta < 0.2f) ta = 0.2f;
             }
             g_config.alpha = a;
@@ -969,7 +969,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::Checkbox(LOC("允许危险透明度", "Allow risky opacity"), &g_config.dangerous_alpha_allowed);
             if (any_low && !g_config.dangerous_alpha_allowed) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
-                    LOC("窗口和文字透明度不低于 0.2。\n勾选后可调低。", "Window & text opacity capped at 0.2.\nCheck to allow lower values."));
+                    LOC("文字透明度不低于 0.2。\n勾选后可调低。", "Text opacity capped at 0.2.\nCheck to allow lower values."));
             }
 
             ImGui::Separator();
