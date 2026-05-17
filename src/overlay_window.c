@@ -1017,22 +1017,36 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     }
 
 #ifdef _WIN32
-    /* Remove all detached settings viewports from the taskbar. */
+    /* Manage all detached ImGui viewports (e.g., Settings window): 
+     * hide them from the taskbar and synchronize their TopMost status. */
     {
+        HWND main_hwnd = glfwGetWin32Window(g_window);
         ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
         for (int i = 0; i < pio.Viewports.Size; i++) {
             ImGuiViewport* vp = pio.Viewports[i];
             if (vp->PlatformHandle != NULL) {
                 HWND hwnd = glfwGetWin32Window((GLFWwindow*)vp->PlatformHandle);
-                if (hwnd != NULL) {
+                
+                /* Exclude the main overlay window, which is already managed by apply_config_to_window() */
+                if (hwnd != NULL && hwnd != main_hwnd) {
                     LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+                    
+                    /* Ensure the viewport remains a tool window (hidden from taskbar) */
                     LONG_PTR needed = exstyle | WS_EX_TOOLWINDOW;
                     needed &= ~WS_EX_APPWINDOW;
-                    if (exstyle != needed) {
+                    
+                    /* Check if the current Z-order state matches the global setting */
+                    bool is_topmost = (exstyle & WS_EX_TOPMOST) != 0;
+                    bool needs_z_update = (is_topmost != g_config.always_on_top);
+                    
+                    if (exstyle != needed || needs_z_update) {
                         SetWindowLongPtr(hwnd, GWL_EXSTYLE, needed);
-                        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
-                                     | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOREDRAW);
+                        
+                        /* Apply HWND_TOPMOST or HWND_NOTOPMOST dynamically */
+                        HWND insert_after = g_config.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST;
+                        SetWindowPos(hwnd, insert_after, 0, 0, 0, 0,
+                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE 
+                                     | SWP_FRAMECHANGED | SWP_NOREDRAW);
                     }
                 }
             }
