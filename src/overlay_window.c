@@ -492,6 +492,12 @@ static void apply_config_to_window(void) {
     glfwSetWindowAttrib(g_window, GLFW_FLOATING,
         g_config.always_on_top ? GLFW_TRUE : GLFW_FALSE);
 
+    /* Let GLFW track the native mouse-passthrough state (GLFW 3.3.2+) */
+#if defined(GLFW_MOUSE_PASSTHROUGH)
+    glfwSetWindowAttrib(g_window, GLFW_MOUSE_PASSTHROUGH,
+        g_config.mouse_passthrough ? GLFW_TRUE : GLFW_FALSE);
+#endif
+
 #ifdef _WIN32
     HWND hwnd = glfwGetWin32Window(g_window);
     if (hwnd) {
@@ -1103,6 +1109,32 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     }
 
 #ifdef _WIN32
+    /* Core fix: prevent ImGui viewport refresh from accidentally clearing
+     * the main window's mouse-passthrough (WS_EX_TRANSPARENT) state. */
+    {
+        HWND hwnd = glfwGetWin32Window(g_window);
+        if (hwnd) {
+            LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            LONG_PTR needed = exstyle;
+            
+            needed |= WS_EX_TOOLWINDOW;
+            needed &= ~WS_EX_APPWINDOW;
+            
+            if (g_config.mouse_passthrough) {
+                needed |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
+            } else {
+                needed &= ~WS_EX_TRANSPARENT;
+            }
+            
+            /* Restore lost style bits that GLFW or ImGui may have overwritten */
+            if (exstyle != needed) {
+                SetWindowLongPtr(hwnd, GWL_EXSTYLE, needed);
+                SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+        }
+    }
+
     /* Manage all detached ImGui viewports (e.g., Settings window): 
      * hide them from the taskbar and synchronize their TopMost status. */
     {
