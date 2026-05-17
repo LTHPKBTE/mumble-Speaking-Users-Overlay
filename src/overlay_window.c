@@ -484,32 +484,23 @@ static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, 
 static void apply_config_to_window(void) {
     ImGuiStyle& style = ImGui::GetStyle();
 
-    /* Keep global ImGui alpha at 1.0 so the text opacity slider does not also fade the window background. */
     style.Alpha = 1.0f;
     style.Colors[ImGuiCol_WindowBg].w = clamp01f(g_config.alpha);
-    style.Colors[ImGuiCol_ChildBg].w = 0.0f;
 
-    if (g_window == NULL) return;
+    if (!g_window) return;
 
-    /* Let GLFW handle portable attributes where available. */
-    glfwSetWindowAttrib(g_window, GLFW_FLOATING, g_config.always_on_top ? GLFW_TRUE : GLFW_FALSE);
-
-#if defined(GLFW_MOUSE_PASSTHROUGH)
-    glfwSetWindowAttrib(g_window, GLFW_MOUSE_PASSTHROUGH, g_config.mouse_passthrough ? GLFW_TRUE : GLFW_FALSE);
-#endif
+    glfwSetWindowAttrib(g_window, GLFW_FLOATING,
+        g_config.always_on_top ? GLFW_TRUE : GLFW_FALSE);
 
 #ifdef _WIN32
     HWND hwnd = glfwGetWin32Window(g_window);
-    if (hwnd != NULL) {
+    if (hwnd) {
         LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
 
-        /* Keep the overlay out of Alt-Tab/taskbar and avoid activation when it is shown. */
-        exstyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        exstyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW;
         exstyle &= ~WS_EX_APPWINDOW;
+        exstyle &= ~WS_EX_NOREDIRECTIONBITMAP;
 
-        /* Do not force WS_EX_LAYERED here: layered OpenGL windows commonly lose per-pixel alpha and turn black.
-         * Click-through is handled by WM_NCHITTEST returning HTTRANSPARENT, with GLFW as a secondary path. */
-        exstyle &= ~WS_EX_LAYERED;
         if (g_config.mouse_passthrough) {
             exstyle |= WS_EX_TRANSPARENT;
         } else {
@@ -517,9 +508,13 @@ static void apply_config_to_window(void) {
         }
 
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, exstyle);
-        SetWindowPos(hwnd, g_config.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST,
-                     0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        SetWindowPos(hwnd,
+            g_config.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
 #endif
 }
