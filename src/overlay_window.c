@@ -115,6 +115,9 @@ static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, 
 static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
 
+static float clamp01f(float v);
+static ImVec4 with_text_alpha(ImVec4 color);
+
 /* ========================================================================
  * Font: load CJK glyphs for Chinese / Japanese / Korean
  * ======================================================================== */
