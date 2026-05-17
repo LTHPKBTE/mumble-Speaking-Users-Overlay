@@ -675,6 +675,21 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             main_flags |= ImGuiWindowFlags_NoInputs;
         }
 
+        /* ================================================================
+     * Main panel rendering area
+     * ================================================================ */
+    if (!g_window_hidden) {
+        ImGuiWindowFlags main_flags = ImGuiWindowFlags_NoTitleBar
+                                    | ImGuiWindowFlags_NoResize
+                                    | ImGuiWindowFlags_NoCollapse
+                                    | ImGuiWindowFlags_NoBringToFrontOnFocus
+                                    | ImGuiWindowFlags_NoSavedSettings
+                                    | ImGuiWindowFlags_AlwaysAutoResize;
+
+        if (g_config.mouse_passthrough) {
+            main_flags |= ImGuiWindowFlags_NoInputs;
+        }
+
         /* 
          * Force the main overlay to stay inside the primary GLFW window.
          * Without this, ImGui might pop it out into a separate viewport OS window,
@@ -688,6 +703,11 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
         ImGui::Begin("SpeakingOverlayMain", NULL, main_flags);
         ImGui::PopStyleVar();
+
+        ImVec4 base_text_col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        base_text_col.w = clamp01f(g_config.text_alpha);
+        ImGui::PushStyleColor(ImGuiCol_Text, base_text_col);
+
 
         if (!g_config.mouse_passthrough) {
             float title_h = ImGui::GetFrameHeight() + 4.0f;
