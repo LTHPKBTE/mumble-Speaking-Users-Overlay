@@ -691,6 +691,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         float win_alpha = clamp01f(g_config.alpha);
         ImGuiStyle& style = ImGui::GetStyle();
         
+        // Apply alpha to all relevant style colors so the whole panel follows the opacity setting
         ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(style.Colors[ImGuiCol_Border].x, style.Colors[ImGuiCol_Border].y, style.Colors[ImGuiCol_Border].z, style.Colors[ImGuiCol_Border].w * win_alpha));
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w * win_alpha));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(style.Colors[ImGuiCol_ButtonHovered].x, style.Colors[ImGuiCol_ButtonHovered].y, style.Colors[ImGuiCol_ButtonHovered].z, style.Colors[ImGuiCol_ButtonHovered].w * win_alpha));
@@ -724,7 +725,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 default: status_text = LOC("空闲", "Idle"); break;
             }
             float st_w = ImGui::CalcTextSize(status_text).x;
-            float row_w = w + st_w + 20.0f;
+            float row_w = w + st_w + 30.0f; 
             if (row_w > max_w) max_w = row_w;
         }
 
@@ -738,7 +739,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         
         int max_vis = g_config.max_visible_speakers;
         if (display_count > max_vis) {
-            max_w += ImGui::GetStyle().ScrollbarSize;
+            max_w += ImGui::GetStyle().ScrollbarSize + 10.0f; 
         }
 
         if (user_count == 0) {
@@ -827,7 +828,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::TextColored(with_text_alpha(ImVec4(0.45f, 0.45f, 0.45f, 1.0f)), LOC("  当前没人说话...", "  Nobody is speaking..."));
         } else {
             int pinned_count = (display_count < max_vis) ? display_count : max_vis;
-            float child_h = pinned_count * ImGui::GetTextLineHeightWithSpacing();
+            // Add 4px margin to prevent floating-point rounding from forcing a scrollbar unnecessarily
+            float child_h = pinned_count * ImGui::GetTextLineHeightWithSpacing() + 4.0f;
             if (display_count > max_vis) {
                 child_h += 6.0f;
                 child_h += ImGui::GetTextLineHeightWithSpacing();
@@ -889,15 +891,25 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
         ImGui::Dummy(ImVec2(max_w, 0.0f));
 
+        /* --- Core fix: use GetCursorPosY() for accurate content height, add 2-px tolerance --- */
         if (!g_drag_active) {
-            ImVec2 win_size = ImGui::GetWindowSize();
-            int target_w = (int)(win_size.x + 0.5f);
-            int target_h = (int)(win_size.y + 0.5f);
+            float target_w_f = max_w + ImGui::GetStyle().WindowPadding.x * 2.0f;
+            // Use GetCursorPosY() instead of GetWindowSize() to get the true layout height
+            float target_h_f = ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y;
+            
+            int target_w = (int)(target_w_f + 0.5f);
+            int target_h = (int)(target_h_f + 0.5f);
+            
+            // Enforce a minimum native window size so it never shrinks into a state from which it cannot expand
+            if (target_w < 150) target_w = 150;
+            if (target_h < 40)  target_h = 40;
             
             int cur_w, cur_h;
             glfwGetWindowSize(g_window, &cur_w, &cur_h);
             
-            if (cur_w != target_w || cur_h != target_h) {
+            // 2-pixel tolerance to prevent infinite resize loops at the OS level.
+            // This fixes TopMost and OBS capture breaking due to 60 FPS continuous resizing.
+            if (abs(cur_w - target_w) > 2 || abs(cur_h - target_h) > 2) {
                 glfwSetWindowSize(g_window, target_w, target_h);
                 g_config.window_width = target_w;
                 g_config.window_height = target_h;
@@ -914,8 +926,11 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
      * ================================================================ */
     if (g_settings_open) {
         ImGui::Begin(LOC("设置", "Settings"), &g_settings_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+            // Track whether any relevant setting has changed
+            bool settings_changed = false;
+
             float a = g_config.alpha;
-            ImGui::SliderFloat(LOC("窗口透明度", "Window opacity"), &a, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
+            if (ImGui::SliderFloat(LOC("窗口透明度", "Window opacity"), &a, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None)) settings_changed = true;
             float ta = g_config.text_alpha;
             ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &ta, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
 
@@ -935,7 +950,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             ImGui::Separator();
 
-            ImGui::SliderFloat(LOC("缩放", "Scale"), &g_config.window_scale, 1.0f, 4.0f, "%.1f", ImGuiSliderFlags_None);
+            if (ImGui::SliderFloat(LOC("缩放", "Scale"), &g_config.window_scale, 1.0f, 4.0f, "%.1f", ImGuiSliderFlags_None)) settings_changed = true;
             {
                 ImGuiIO& io = ImGui::GetIO();
                 io.FontGlobalScale = g_config.window_scale;
@@ -944,6 +959,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::Separator();
 
             ImGui::Checkbox(LOC("窗口置顶", "Always on top"), &g_config.always_on_top);
+            if (ImGui::IsItemEdited()) settings_changed = true;
 
             ImGui::Checkbox(LOC("鼠标穿透", "Mouse passthrough"), &g_config.mouse_passthrough);
             if (g_config.mouse_passthrough) {
@@ -971,7 +987,10 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             ImGui::Checkbox(LOC("在 Mumble 输出日志", "Log to Mumble console"), &g_config.mumble_logging_enabled);
 
-            apply_config_to_window();
+            // Only refresh window properties when the user actually changed a relevant setting
+            if (settings_changed) {
+                apply_config_to_window();
+            }
 
             ImGui::Separator();
 
