@@ -46,6 +46,27 @@ void glViewport(int x, int y, int w, int h);
 #include "overlay_window.h"
 
 /* ========================================================================
+ * Log callback — set by plugin.c to forward messages to Mumble
+ * ======================================================================== */
+static overlay_log_fn g_log_fn = NULL;
+
+void overlay_window_set_log_callback(overlay_log_fn fn) {
+    g_log_fn = fn;
+}
+
+#define OW_LOG(msg) do { \
+    fprintf(stderr, "[overlay] %s\n", msg); \
+    if (g_log_fn) g_log_fn(msg); \
+} while(0)
+
+#define OW_LOGF(fmt, ...) do { \
+    char _ow_buf[512]; \
+    snprintf(_ow_buf, sizeof(_ow_buf), fmt, __VA_ARGS__); \
+    fprintf(stderr, "[overlay] %s\n", _ow_buf); \
+    if (g_log_fn) g_log_fn(_ow_buf); \
+} while(0)
+
+/* ========================================================================
  * Localisation: detect system language
  * ======================================================================== */
 static int g_lang_is_chinese = 0;
@@ -167,13 +188,13 @@ static void load_cjk_font(void) {
     for (int i = 0; candidates[i] != NULL; i++) {
         ImFont *font = io.Fonts->AddFontFromFileTTF(candidates[i], 16.0f, &config, ranges);
         if (font != NULL) {
-            fprintf(stderr, "Loaded CJK font: %s\n", candidates[i]);
+            OW_LOGF("Loaded CJK font: %s", candidates[i]);
             return; /* success */
         }
     }
 
     /* No CJK font found – not a fatal error; non-ASCII will show as fallback */
-    fprintf(stderr, "No CJK font found, non-ASCII glyphs unavailable\n");
+    OW_LOG("No CJK font found, non-ASCII glyphs unavailable");
 }
 
 /* ========================================================================
@@ -245,10 +266,43 @@ static const char *overlay_config_path(void) {
 
 static void overlay_config_save(void) {
     const char *cfg_path = overlay_config_path();
-    if (!cfg_path) return;
+    if (!cfg_path) {
+        OW_LOG("Config save failed: could not determine config path");
+        return;
+    }
+
+    /* Ensure parent directory exists */
+#ifdef _WIN32
+    {
+        char dir[1024];
+        snprintf(dir, sizeof(dir), "%s", cfg_path);
+        char *last_sep = strrchr(dir, '\\');
+        if (last_sep != NULL) {
+            *last_sep = '\0';
+            if (!CreateDirectoryA(dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+                /* Log but continue — fopen will also fail if dir is unusable */
+                OW_LOGF("Config save: could not create directory %s (error %lu)", dir, GetLastError());
+            }
+        }
+    }
+#else
+    {
+        char dir[1024];
+        snprintf(dir, sizeof(dir), "%s", cfg_path);
+        char *last_sep = strrchr(dir, '/');
+        if (last_sep != NULL) {
+            *last_sep = '\0';
+            /* mkdir -p style: ignore EEXIST */
+            mkdir(dir, 0755);
+        }
+    }
+#endif
 
     FILE *f = fopen(cfg_path, "w");
-    if (!f) return;
+    if (!f) {
+        OW_LOGF("Config save failed: could not open %s for writing", cfg_path);
+        return;
+    }
     fprintf(f, "window_x=%d\n",        g_config.window_x);
     fprintf(f, "window_y=%d\n",        g_config.window_y);
     fprintf(f, "window_width=%d\n",    g_config.window_width);
@@ -271,10 +325,16 @@ static void overlay_config_load(overlay_config_t *cfg) {
     *cfg = overlay_config_default();
 
     const char *cfg_path = overlay_config_path();
-    if (!cfg_path) return;
+    if (!cfg_path) {
+        OW_LOG("Config load: could not determine config path, using defaults");
+        return;
+    }
 
     FILE *f = fopen(cfg_path, "r");
-    if (!f) return;
+    if (!f) {
+        /* File doesn't exist — normal for first run, don't log as error */
+        return;
+    }
 
     char line[256];
     while (fgets(line, sizeof(line), f)) {
@@ -292,15 +352,13 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "alpha=%f", &fval) == 1)           cfg->alpha = fval;
         else if (sscanf(line, "text_alpha=%f", &fval) == 1)      cfg->text_alpha = fval;
         else if (sscanf(line, "window_scale=%f", &fval) == 1)    cfg->window_scale = fval;
-        else if (sscanf(line, "show_idle_users=%d", &ival) == 1)   cfg->show_idle_users = (ival != 0);
-        else if (sscanf(line, "idle_user_alpha=%f", &fval) == 1)   cfg->idle_user_alpha = fval;
         else if (sscanf(line, "mouse_passthrough=%d", &ival) == 1) cfg->mouse_passthrough = (ival != 0);
         else if (sscanf(line, "always_on_top=%d", &ival) == 1)   cfg->always_on_top = (ival != 0);
         else if (sscanf(line, "max_visible_speakers=%d", &ival) == 1) cfg->max_visible_speakers = ival;
-        else if (sscanf(line, "dangerous_alpha_allowed=%d", &ival) == 1) cfg->dangerous_alpha_allowed = (ival != 0);
         else if (sscanf(line, "show_idle_users=%d", &ival) == 1)   cfg->show_idle_users = (ival != 0);
         else if (sscanf(line, "idle_user_alpha=%f", &fval) == 1)   cfg->idle_user_alpha = fval;
         else if (sscanf(line, "idle_timeout_seconds=%d", &ival) == 1) cfg->idle_timeout_seconds = ival;
+        else if (sscanf(line, "dangerous_alpha_allowed=%d", &ival) == 1) cfg->dangerous_alpha_allowed = (ival != 0);
         else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
     }
     fclose(f);
@@ -311,7 +369,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
  * ======================================================================== */
 static void glfw_error_callback(int error, const char *description) {
     (void)error;
-    fprintf(stderr, "GLFW error: %s\n", description);
+    OW_LOGF("GLFW error %d: %s", error, description);
 }
 
 /* ========================================================================
@@ -348,6 +406,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
     /* --- GLFW --- */
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) {
+        OW_LOG("Failed to initialize GLFW");
         return OW_ERR_GLFW;
     }
 
@@ -364,6 +423,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
     g_window = glfwCreateWindow(g_config.window_width, g_config.window_height,
                                 "Mumble Speaking Overlay", NULL, NULL);
     if (g_window == NULL) {
+        OW_LOG("Failed to create GLFW window");
         glfwTerminate();
         return OW_ERR_GLFW;
     }
@@ -403,6 +463,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
 
     /* --- Backend init --- */
     if (!ImGui_ImplGlfw_InitForOpenGL(g_window, true)) {
+        OW_LOG("Failed to init ImGui GLFW backend");
         ImGui::DestroyContext();
         glfwDestroyWindow(g_window);
         glfwTerminate();
@@ -416,6 +477,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
 #endif
 
     if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+        OW_LOGF("Failed to init ImGui OpenGL3 backend (GLSL: %s)", glsl_version);
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         glfwDestroyWindow(g_window);
@@ -974,7 +1036,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             float a = g_config.alpha;
             if (ImGui::SliderFloat(LOC("窗口透明度", "Window opacity"), &a, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None)) settings_changed = true;
             float ta = g_config.text_alpha;
-            ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &ta, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
+            if (ImGui::SliderFloat(LOC("文字透明度", "Text opacity"), &ta, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None)) settings_changed = true;
 
             // Dangerous alpha cap only applies to text alpha; window alpha is always free
             bool any_low = (ta < 0.2f);
@@ -984,7 +1046,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             g_config.alpha = a;
             g_config.text_alpha = ta;
 
-            ImGui::Checkbox(LOC("允许危险透明度", "Allow risky opacity"), &g_config.dangerous_alpha_allowed);
+            if (ImGui::Checkbox(LOC("允许危险透明度", "Allow risky opacity"), &g_config.dangerous_alpha_allowed)) settings_changed = true;
             if (any_low && !g_config.dangerous_alpha_allowed) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
                     LOC("文字透明度不低于 0.2。\n勾选后可调低。", "Text opacity capped at 0.2.\nCheck to allow lower values."));
@@ -1000,11 +1062,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             ImGui::Separator();
 
-            ImGui::Checkbox(LOC("窗口置顶", "Always on top"), &g_config.always_on_top);
-            if (ImGui::IsItemEdited()) settings_changed = true;
+            if (ImGui::Checkbox(LOC("窗口置顶", "Always on top"), &g_config.always_on_top)) settings_changed = true;
 
-            ImGui::Checkbox(LOC("鼠标穿透", "Mouse passthrough"), &g_config.mouse_passthrough);
-            if (ImGui::IsItemEdited()) settings_changed = true;
+            if (ImGui::Checkbox(LOC("鼠标穿透", "Mouse passthrough"), &g_config.mouse_passthrough)) settings_changed = true;
             if (g_config.mouse_passthrough) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
                     LOC("启用后将无法用鼠标点击窗口。\n按 Ctrl+Shift+P 可关闭穿透。", "Cannot click the window once enabled.\nPress Ctrl+Shift+P to disable."));
@@ -1012,23 +1072,23 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             ImGui::Separator();
 
-            ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"), &g_config.max_visible_speakers, 1, 64, "%d", ImGuiSliderFlags_None);
+            if (ImGui::SliderInt(LOC("可见发言人数", "Visible speakers"), &g_config.max_visible_speakers, 1, 64, "%d", ImGuiSliderFlags_None)) settings_changed = true;
 
             ImGui::Separator();
 
-            ImGui::Checkbox(LOC("显示未发言用户", "Show idle users"), &g_config.show_idle_users);
+            if (ImGui::Checkbox(LOC("显示未发言用户", "Show idle users"), &g_config.show_idle_users)) settings_changed = true;
             if (g_config.show_idle_users) {
-                ImGui::SliderFloat(LOC("未发言用户透明度", "Idle user opacity"), &g_config.idle_user_alpha, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None);
+                if (ImGui::SliderFloat(LOC("未发言用户透明度", "Idle user opacity"), &g_config.idle_user_alpha, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_None)) settings_changed = true;
                 if (g_config.idle_user_alpha < 0.2f && !g_config.dangerous_alpha_allowed) {
                     g_config.idle_user_alpha = 0.2f;
                 }
             }
 
-            ImGui::SliderInt(LOC("空闲超时(秒)", "Idle timeout(s)"), &g_config.idle_timeout_seconds, 1, 30, "%d", ImGuiSliderFlags_None);
+            if (ImGui::SliderInt(LOC("空闲超时(秒)", "Idle timeout(s)"), &g_config.idle_timeout_seconds, 1, 30, "%d", ImGuiSliderFlags_None)) settings_changed = true;
 
             ImGui::Separator();
 
-            ImGui::Checkbox(LOC("在 Mumble 输出日志", "Log to Mumble console"), &g_config.mumble_logging_enabled);
+            if (ImGui::Checkbox(LOC("在 Mumble 输出日志", "Log to Mumble console"), &g_config.mumble_logging_enabled)) settings_changed = true;
 
             // Only refresh window properties when the user actually changed a relevant setting
             if (settings_changed) {
@@ -1053,6 +1113,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.window_height = def.window_height;
                 glfwSetWindowPos(g_window, g_config.window_x, g_config.window_y);
                 glfwSetWindowSize(g_window, g_config.window_width, g_config.window_height);
+                settings_changed = true;
                 if (g_window_hidden) {
                     g_window_hidden = false;
                     g_user_hid_window = false;
@@ -1083,11 +1144,17 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     ImGuiIO& io_reset = ImGui::GetIO();
                     io_reset.FontGlobalScale = g_config.window_scale;
                 }
+                settings_changed = true;
                 if (g_window_hidden) {
                     g_window_hidden = false;
                     g_user_hid_window = false;
                     glfwShowWindow(g_window);
                 }
+            }
+
+            /* Save config to disk when settings change or panel is about to close */
+            if (settings_changed || !g_settings_open) {
+                overlay_config_save();
             }
         ImGui::End();
     }

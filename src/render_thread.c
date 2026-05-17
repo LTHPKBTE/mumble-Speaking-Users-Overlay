@@ -9,6 +9,7 @@
 #include "render_thread.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -45,6 +46,7 @@ static thread_handle_t g_render_thread;
 /* ---- Context passed to render thread ---- */
 typedef struct {
     overlay_config_t          config;
+    bool                      use_saved_config;  /* If true, pass NULL to overlay_window_init */
     overlay_poll_speakers_fn  poll_fn;
     void                     *userdata;
 } render_thread_data_t;
@@ -53,7 +55,7 @@ typedef struct {
 static THREAD_RETURN render_thread_proc(void *arg) {
     render_thread_data_t *data = (render_thread_data_t *)arg;
 
-    int rc = overlay_window_init(&data->config);
+    int rc = overlay_window_init(data->use_saved_config ? NULL : &data->config);
     if (rc != OW_OK) {
         free(data);
         ATOMIC_SET(g_running, 0);
@@ -88,7 +90,14 @@ int render_thread_start(const overlay_config_t *cfg,
     if (data == NULL) {
         return -2;
     }
-    data->config   = *cfg;
+    /* If cfg is NULL, tell overlay_window_init to use saved config from disk */
+    if (cfg != NULL) {
+        data->config = *cfg;
+        data->use_saved_config = false;
+    } else {
+        memset(&data->config, 0, sizeof(data->config));
+        data->use_saved_config = true;
+    }
     data->poll_fn  = poll;
     data->userdata = userdata;
 

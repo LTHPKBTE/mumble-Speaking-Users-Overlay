@@ -61,6 +61,18 @@ typedef int (*overlay_poll_speakers_fn)(void *userdata,
                                         /* out: */ int *states,
                                         int max_count);
 
+/*
+ * Log callback — called by the overlay window to report errors/warnings.
+ * Set via overlay_window_set_log_callback(). If not set, errors only go to stderr.
+ */
+typedef void (*overlay_log_fn)(const char *msg);
+
+/*
+ * Set the log callback. Call once from the Mumble main thread before
+ * starting the render thread. Thread-safe.
+ */
+void overlay_window_set_log_callback(overlay_log_fn fn);
+
 bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata);
 
 /*

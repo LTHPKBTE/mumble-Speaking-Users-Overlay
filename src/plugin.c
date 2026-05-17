@@ -38,6 +38,17 @@
     } \
 } while(0)
 
+/* Error log — ALWAYS outputs to Mumble regardless of logging config */
+#define PLUGIN_LOG_ERROR(msg) do { \
+    g_api.log(g_plugin_id, msg); \
+} while(0)
+
+#define PLUGIN_LOG_ERRORF(fmt, ...) do { \
+    char _buf[256]; \
+    snprintf(_buf, sizeof(_buf), fmt, __VA_ARGS__); \
+    g_api.log(g_plugin_id, _buf); \
+} while(0)
+
 /* ========================================================================
  * Global state
  * ======================================================================== */
@@ -99,7 +110,10 @@ static int overlay_poll_speakers(void *userdata,
 mumble_error_t mumble_init(mumble_plugin_id_t id) {
     g_plugin_id = id;
 
-    PLUGIN_LOG("Plugin initialized");
+    PLUGIN_LOG_ERROR("SpeakingUsersOverlay: Plugin initialized");
+
+    /* Set up log forwarding from overlay window to Mumble */
+    overlay_window_set_log_callback(overlay_log_to_mumble);
 
     speaking_users_init();
     g_active_connection = -1;
@@ -134,10 +148,10 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
             }
 
             if (!render_thread_is_running()) {
-                overlay_config_t cfg = overlay_config_default();
-                int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
+                /* Pass NULL — overlay will load saved config from disk */
+                int rc = render_thread_start(NULL, overlay_poll_speakers, NULL);
                 if (rc != 0) {
-                    PLUGIN_LOG("Failed to start render thread for existing connection");
+                    PLUGIN_LOG_ERRORF("Failed to start render thread for existing connection (rc=%d)", rc);
                 } else {
                     /* Sync logging flag from overlay config (now loaded from disk) */
                     overlay_config_t loaded_cfg;
@@ -157,16 +171,16 @@ mumble_error_t mumble_init(mumble_plugin_id_t id) {
 }
 
 void mumble_shutdown(void) {
-    PLUGIN_LOG("Plugin shutting down");
+    PLUGIN_LOG_ERROR("SpeakingUsersOverlay: Plugin shutting down");
 
-    /* Stop render thread first */
+    /* Stop render thread first (this triggers overlay_window_shutdown which saves config) */
     if (render_thread_is_running()) {
         render_thread_stop();
     }
 
     speaking_users_destroy();
 
-    PLUGIN_LOG("Shutdown complete");
+    PLUGIN_LOG_ERROR("SpeakingUsersOverlay: Shutdown complete");
 }
 
 struct MumbleStringWrapper mumble_getName(void) {
@@ -242,14 +256,15 @@ void mumble_onServerConnected(mumble_connection_t connection) {
 }
 
 void mumble_onServerDisconnected(mumble_connection_t connection) {
+    PLUGIN_LOGF("Disconnected from server (conn=%d)", (int)connection);
+
+    /* Stop render thread (this triggers overlay_window_shutdown which saves config) */
     if (render_thread_is_running()) {
         render_thread_stop();
     }
     speaking_users_clear();
 
     g_active_connection = -1;
-
-    PLUGIN_LOGF("Disconnected from server (conn=%d)", (int)connection);
 }
 
 void mumble_onServerSynchronized(mumble_connection_t connection) {
@@ -274,10 +289,10 @@ void mumble_onServerSynchronized(mumble_connection_t connection) {
 
     /* Start render thread when we first connect */
     if (!render_thread_is_running()) {
-        overlay_config_t cfg = overlay_config_default();
-        int rc = render_thread_start(&cfg, overlay_poll_speakers, NULL);
+        /* Pass NULL — overlay will load saved config from disk */
+        int rc = render_thread_start(NULL, overlay_poll_speakers, NULL);
         if (rc != 0) {
-            PLUGIN_LOG("Failed to start render thread");
+            PLUGIN_LOG_ERRORF("Failed to start render thread on server sync (rc=%d)", rc);
         } else {
             /* Sync logging flag from overlay config (now loaded from disk) */
             overlay_config_t loaded_cfg;
@@ -312,6 +327,18 @@ void mumble_onUserAdded(mumble_connection_t connection, mumble_userid_t userID) 
     const char *name = fetch_user_name(connection, userID, name_buf, sizeof(name_buf));
     if (name != NULL && name[0] != '\0') {
         speaking_users_upsert(userID, name, SU_PASSIVE);
+    }
+}
+
+/* ========================================================================
+ * Log bridge: forwards overlay window errors to Mumble's log
+ *
+ * Called from render thread via overlay_window log callback.
+ * Safe because g_api.log is expected to be thread-safe by Mumble.
+ * ======================================================================== */
+static void overlay_log_to_mumble(const char *msg) {
+    if (msg != NULL) {
+        g_api.log(g_plugin_id, msg);
     }
 }
 
