@@ -539,6 +539,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
      * Skipping frames would stop ImGui input and detached settings viewports from being pumped. */
     glfwPollEvents();
 
+    ImGuiIO& io = ImGui::GetIO();
+    if (g_config.mouse_passthrough && !io.WantCaptureMouse) {
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    } else {
+        io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    }
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
