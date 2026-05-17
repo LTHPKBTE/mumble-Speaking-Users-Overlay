@@ -64,6 +64,7 @@ static bool g_mumble_logging_enabled = true;
  * ======================================================================== */
 static const char *fetch_user_name(mumble_connection_t conn, mumble_userid_t user_id,
                                    char *buf, size_t buf_size);
+static void overlay_log_to_mumble(const char *msg);
 
 /* ========================================================================
  * Poll callback — called from render thread to get active speakers
