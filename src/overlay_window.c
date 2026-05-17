@@ -471,6 +471,19 @@ static ImVec4 with_text_alpha(ImVec4 color) {
 
 #ifdef _WIN32
 static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    /* Intercept style changes at the OS kernel level to enforce passthrough state */
+    if (msg == WM_STYLECHANGING && wParam == GWL_EXSTYLE) {
+        STYLESTRUCT* style = (STYLESTRUCT*)lParam;
+        if (g_config.mouse_passthrough) {
+            style->styleNew |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
+        } else {
+            style->styleNew &= ~WS_EX_TRANSPARENT;
+        }
+        /* Always hide from taskbar */
+        style->styleNew |= WS_EX_TOOLWINDOW;
+        style->styleNew &= ~WS_EX_APPWINDOW;
+    }
+
     if (msg == WM_NCHITTEST && g_config.mouse_passthrough) {
         return HTTRANSPARENT;
     }
@@ -1109,32 +1122,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     }
 
 #ifdef _WIN32
-    /* Core fix: prevent ImGui viewport refresh from accidentally clearing
-     * the main window's mouse-passthrough (WS_EX_TRANSPARENT) state. */
-    {
-        HWND hwnd = glfwGetWin32Window(g_window);
-        if (hwnd) {
-            LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-            LONG_PTR needed = exstyle;
-            
-            needed |= WS_EX_TOOLWINDOW;
-            needed &= ~WS_EX_APPWINDOW;
-            
-            if (g_config.mouse_passthrough) {
-                needed |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
-            } else {
-                needed &= ~WS_EX_TRANSPARENT;
-            }
-            
-            /* Restore lost style bits that GLFW or ImGui may have overwritten */
-            if (exstyle != needed) {
-                SetWindowLongPtr(hwnd, GWL_EXSTYLE, needed);
-                SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
-            }
-        }
-    }
-
     /* Manage all detached ImGui viewports (e.g., Settings window): 
      * hide them from the taskbar and synchronize their TopMost status. */
     {
