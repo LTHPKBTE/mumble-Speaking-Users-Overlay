@@ -109,7 +109,6 @@ static volatile bool    g_request_show          = false;
 static volatile bool    g_request_reset_position = false;
 
 /* ---- Optimization: cached values to avoid redundant work ---- */
-static float  g_last_win_alpha   = -1.0f;   /* last win_alpha used for style colors */
 static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
 
 /* ---- User list scrolling / activity state ---- */
@@ -519,8 +518,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
 
     g_first_frame = true;
 
-    /* Initialise optimisation caches to match the freshly loaded config */
-    g_last_win_alpha = clamp01f(g_config.alpha);
+    /* Initialise optimisation cache to match the freshly loaded config. */
     g_last_topmost   = g_config.always_on_top;
 
     /* Show the window only after the initial native state has been applied. */
@@ -819,23 +817,25 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         float win_alpha = clamp01f(g_config.alpha);
         ImGuiStyle& style = ImGui::GetStyle();
 
-        int pushed_colors = 0;
+        /*
+         * Push style colors with applied alpha every frame unconditionally.
+         * ImGui's PushStyleColor/PopStyleColor work as a stack: we push N colors
+         * at the start of the frame and pop them at the end.  Skipping pushes
+         * based on a cache would let the base (opaque) style leak through.
+         */
+        const int PUSHED_STYLE_COUNT = 10;
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(style.Colors[ImGuiCol_Border].x, style.Colors[ImGuiCol_Border].y, style.Colors[ImGuiCol_Border].z, style.Colors[ImGuiCol_Border].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(style.Colors[ImGuiCol_ButtonHovered].x, style.Colors[ImGuiCol_ButtonHovered].y, style.Colors[ImGuiCol_ButtonHovered].z, style.Colors[ImGuiCol_ButtonHovered].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(style.Colors[ImGuiCol_ButtonActive].x, style.Colors[ImGuiCol_ButtonActive].y, style.Colors[ImGuiCol_ButtonActive].z, style.Colors[ImGuiCol_ButtonActive].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(style.Colors[ImGuiCol_Separator].x, style.Colors[ImGuiCol_Separator].y, style.Colors[ImGuiCol_Separator].z, style.Colors[ImGuiCol_Separator].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(style.Colors[ImGuiCol_ScrollbarBg].x, style.Colors[ImGuiCol_ScrollbarBg].y, style.Colors[ImGuiCol_ScrollbarBg].z, style.Colors[ImGuiCol_ScrollbarBg].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(style.Colors[ImGuiCol_ScrollbarGrab].x, style.Colors[ImGuiCol_ScrollbarGrab].y, style.Colors[ImGuiCol_ScrollbarGrab].z, style.Colors[ImGuiCol_ScrollbarGrab].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabHovered].x, style.Colors[ImGuiCol_ScrollbarGrabHovered].y, style.Colors[ImGuiCol_ScrollbarGrabHovered].z, style.Colors[ImGuiCol_ScrollbarGrabHovered].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabActive].x, style.Colors[ImGuiCol_ScrollbarGrabActive].y, style.Colors[ImGuiCol_ScrollbarGrabActive].z, style.Colors[ImGuiCol_ScrollbarGrabActive].w * win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(style.Colors[ImGuiCol_FrameBg].x, style.Colors[ImGuiCol_FrameBg].y, style.Colors[ImGuiCol_FrameBg].z, style.Colors[ImGuiCol_FrameBg].w * win_alpha));
 
-        // Apply alpha to all relevant style colors so the whole panel follows the opacity setting.
-        // Cache the alpha value: only re-push when it actually changes.
-        if (win_alpha != g_last_win_alpha) {
-            g_last_win_alpha = win_alpha;
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(style.Colors[ImGuiCol_Border].x, style.Colors[ImGuiCol_Border].y, style.Colors[ImGuiCol_Border].z, style.Colors[ImGuiCol_Border].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(style.Colors[ImGuiCol_ButtonHovered].x, style.Colors[ImGuiCol_ButtonHovered].y, style.Colors[ImGuiCol_ButtonHovered].z, style.Colors[ImGuiCol_ButtonHovered].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(style.Colors[ImGuiCol_ButtonActive].x, style.Colors[ImGuiCol_ButtonActive].y, style.Colors[ImGuiCol_ButtonActive].z, style.Colors[ImGuiCol_ButtonActive].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(style.Colors[ImGuiCol_Separator].x, style.Colors[ImGuiCol_Separator].y, style.Colors[ImGuiCol_Separator].z, style.Colors[ImGuiCol_Separator].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(style.Colors[ImGuiCol_ScrollbarBg].x, style.Colors[ImGuiCol_ScrollbarBg].y, style.Colors[ImGuiCol_ScrollbarBg].z, style.Colors[ImGuiCol_ScrollbarBg].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(style.Colors[ImGuiCol_ScrollbarGrab].x, style.Colors[ImGuiCol_ScrollbarGrab].y, style.Colors[ImGuiCol_ScrollbarGrab].z, style.Colors[ImGuiCol_ScrollbarGrab].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabHovered].x, style.Colors[ImGuiCol_ScrollbarGrabHovered].y, style.Colors[ImGuiCol_ScrollbarGrabHovered].z, style.Colors[ImGuiCol_ScrollbarGrabHovered].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabActive].x, style.Colors[ImGuiCol_ScrollbarGrabActive].y, style.Colors[ImGuiCol_ScrollbarGrabActive].z, style.Colors[ImGuiCol_ScrollbarGrabActive].w * win_alpha)); pushed_colors++;
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(style.Colors[ImGuiCol_FrameBg].x, style.Colors[ImGuiCol_FrameBg].y, style.Colors[ImGuiCol_FrameBg].z, style.Colors[ImGuiCol_FrameBg].w * win_alpha)); pushed_colors++;
-        }
+        int pushed_colors = PUSHED_STYLE_COUNT;
 
         ImGui::Begin("SpeakingOverlayMain", NULL, main_flags);
         ImGui::PopStyleVar();
