@@ -87,18 +87,18 @@ static int overlay_poll_speakers(void *userdata,
     (void)userdata;
 
     speaking_user_t buffer[64];
-    overlay_config_t cfg;
-    overlay_window_get_config(&cfg);
+    /* Use const pointer to avoid copying the entire config struct every frame */
+    const overlay_config_t *cfg = overlay_window_get_config_ptr();
     int count;
 
-    if (cfg.show_all_users) {
+    if (cfg->show_all_users) {
         /* Always show all known users — never prune.
          * Use a very large timeout so passive entries aren't freed. */
         int huge_timeout = 86400 * 365; /* 1 year */
         count = speaking_users_get_all(buffer, 64, huge_timeout);
-    } else if (cfg.show_recent_speakers) {
+    } else if (cfg->show_recent_speakers) {
         /* Show recently speaking users with configured timeout. */
-        int timeout = cfg.idle_timeout_seconds;
+        int timeout = cfg->idle_timeout_seconds;
         if (timeout < 1) timeout = 30;
         count = speaking_users_get_all(buffer, 64, timeout);
     } else {
@@ -112,7 +112,7 @@ static int overlay_poll_speakers(void *userdata,
     /* Channel filter: when show_current_channel_only is on, skip users not in our channel.
      * g_local_channel_id is only written from the main thread; reading from render
      * thread is safe (int32_t is atomic on all supported platforms). */
-    if (cfg.show_current_channel_only && g_local_channel_id >= 0) {
+    if (cfg->show_current_channel_only && g_local_channel_id >= 0) {
         int filtered = 0;
         for (int i = 0; i < count; i++) {
             if (buffer[i].channel_id == g_local_channel_id) {

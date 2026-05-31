@@ -101,4 +101,10 @@ void overlay_window_shutdown(void);
  */
 void overlay_window_get_config(overlay_config_t *cfg);
 
+/*
+ * Get a const pointer to the current config (read-only).
+ * Avoids copying the entire struct every frame.
+ */
+const overlay_config_t* overlay_window_get_config_ptr(void);
+
 #endif /* OVERLAY_WINDOW_H */

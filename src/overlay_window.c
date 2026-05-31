@@ -108,6 +108,10 @@ static bool             g_user_saw_speaking_after_hide = false;
 static volatile bool    g_request_show          = false;
 static volatile bool    g_request_reset_position = false;
 
+/* ---- Optimization: cached values to avoid redundant work ---- */
+static float  g_last_win_alpha   = -1.0f;   /* last win_alpha used for style colors */
+static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
+
 /* ---- User list scrolling / activity state ---- */
 static double  g_last_mouse_activity_time = 0.0; /* ImGui::GetTime() of last hover/scroll */
 static bool    g_scrolled_by_user         = false; /* user manually scrolled */
@@ -515,6 +519,10 @@ int overlay_window_init(const overlay_config_t *cfg) {
 
     g_first_frame = true;
 
+    /* Initialise optimisation caches to match the freshly loaded config */
+    g_last_win_alpha = clamp01f(g_config.alpha);
+    g_last_topmost   = g_config.always_on_top;
+
     /* Show the window only after the initial native state has been applied. */
     if (!g_window_hidden) {
         glfwShowWindow(g_window);
@@ -623,6 +631,14 @@ static void apply_config_to_window(void) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
 #endif
+}
+
+/* ========================================================================
+ * Return a const pointer to the current runtime configuration.
+ * Avoids copying the entire struct (30+ fields) every frame.
+ * ======================================================================== */
+const overlay_config_t* overlay_window_get_config_ptr(void) {
+    return &g_config;
 }
 
 /* ========================================================================
@@ -765,6 +781,20 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         g_user_saw_speaking_after_hide = false;
     }
 
+    /* ---- Low-power sleep when window is hidden ---- */
+    if (g_window_hidden) {
+        /* Properly end the ImGui frame (ImGui::NewFrame was called above) */
+        ImGui::EndFrame();
+        /*
+         * glfwWaitEventsTimeout processes OS messages (needed for the
+         * low-level keyboard hook on Windows) and sleeps for up to 50 ms.
+         * This drops CPU usage from 100% of vsync to near 0% while hidden,
+         * while still waking promptly for hotkeys (Ctrl+Shift+P/H).
+         */
+        glfwWaitEventsTimeout(0.05);
+        return true;
+    }
+
     /* ================================================================
      * Main panel rendering area
      * ================================================================ */
@@ -788,18 +818,24 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
         float win_alpha = clamp01f(g_config.alpha);
         ImGuiStyle& style = ImGui::GetStyle();
-        
-        // Apply alpha to all relevant style colors so the whole panel follows the opacity setting
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(style.Colors[ImGuiCol_Border].x, style.Colors[ImGuiCol_Border].y, style.Colors[ImGuiCol_Border].z, style.Colors[ImGuiCol_Border].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(style.Colors[ImGuiCol_ButtonHovered].x, style.Colors[ImGuiCol_ButtonHovered].y, style.Colors[ImGuiCol_ButtonHovered].z, style.Colors[ImGuiCol_ButtonHovered].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(style.Colors[ImGuiCol_ButtonActive].x, style.Colors[ImGuiCol_ButtonActive].y, style.Colors[ImGuiCol_ButtonActive].z, style.Colors[ImGuiCol_ButtonActive].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(style.Colors[ImGuiCol_Separator].x, style.Colors[ImGuiCol_Separator].y, style.Colors[ImGuiCol_Separator].z, style.Colors[ImGuiCol_Separator].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(style.Colors[ImGuiCol_ScrollbarBg].x, style.Colors[ImGuiCol_ScrollbarBg].y, style.Colors[ImGuiCol_ScrollbarBg].z, style.Colors[ImGuiCol_ScrollbarBg].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(style.Colors[ImGuiCol_ScrollbarGrab].x, style.Colors[ImGuiCol_ScrollbarGrab].y, style.Colors[ImGuiCol_ScrollbarGrab].z, style.Colors[ImGuiCol_ScrollbarGrab].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabHovered].x, style.Colors[ImGuiCol_ScrollbarGrabHovered].y, style.Colors[ImGuiCol_ScrollbarGrabHovered].z, style.Colors[ImGuiCol_ScrollbarGrabHovered].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabActive].x, style.Colors[ImGuiCol_ScrollbarGrabActive].y, style.Colors[ImGuiCol_ScrollbarGrabActive].z, style.Colors[ImGuiCol_ScrollbarGrabActive].w * win_alpha));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(style.Colors[ImGuiCol_FrameBg].x, style.Colors[ImGuiCol_FrameBg].y, style.Colors[ImGuiCol_FrameBg].z, style.Colors[ImGuiCol_FrameBg].w * win_alpha));
+
+        int pushed_colors = 0;
+
+        // Apply alpha to all relevant style colors so the whole panel follows the opacity setting.
+        // Cache the alpha value: only re-push when it actually changes.
+        if (win_alpha != g_last_win_alpha) {
+            g_last_win_alpha = win_alpha;
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(style.Colors[ImGuiCol_Border].x, style.Colors[ImGuiCol_Border].y, style.Colors[ImGuiCol_Border].z, style.Colors[ImGuiCol_Border].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(style.Colors[ImGuiCol_ButtonHovered].x, style.Colors[ImGuiCol_ButtonHovered].y, style.Colors[ImGuiCol_ButtonHovered].z, style.Colors[ImGuiCol_ButtonHovered].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(style.Colors[ImGuiCol_ButtonActive].x, style.Colors[ImGuiCol_ButtonActive].y, style.Colors[ImGuiCol_ButtonActive].z, style.Colors[ImGuiCol_ButtonActive].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(style.Colors[ImGuiCol_Separator].x, style.Colors[ImGuiCol_Separator].y, style.Colors[ImGuiCol_Separator].z, style.Colors[ImGuiCol_Separator].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(style.Colors[ImGuiCol_ScrollbarBg].x, style.Colors[ImGuiCol_ScrollbarBg].y, style.Colors[ImGuiCol_ScrollbarBg].z, style.Colors[ImGuiCol_ScrollbarBg].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(style.Colors[ImGuiCol_ScrollbarGrab].x, style.Colors[ImGuiCol_ScrollbarGrab].y, style.Colors[ImGuiCol_ScrollbarGrab].z, style.Colors[ImGuiCol_ScrollbarGrab].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabHovered].x, style.Colors[ImGuiCol_ScrollbarGrabHovered].y, style.Colors[ImGuiCol_ScrollbarGrabHovered].z, style.Colors[ImGuiCol_ScrollbarGrabHovered].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(style.Colors[ImGuiCol_ScrollbarGrabActive].x, style.Colors[ImGuiCol_ScrollbarGrabActive].y, style.Colors[ImGuiCol_ScrollbarGrabActive].z, style.Colors[ImGuiCol_ScrollbarGrabActive].w * win_alpha)); pushed_colors++;
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(style.Colors[ImGuiCol_FrameBg].x, style.Colors[ImGuiCol_FrameBg].y, style.Colors[ImGuiCol_FrameBg].z, style.Colors[ImGuiCol_FrameBg].w * win_alpha)); pushed_colors++;
+        }
 
         ImGui::Begin("SpeakingOverlayMain", NULL, main_flags);
         ImGui::PopStyleVar();
@@ -808,7 +844,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
         ImVec4 base_text_col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
         base_text_col.w = clamp01f(g_config.text_alpha);
-        ImGui::PushStyleColor(ImGuiCol_Text, base_text_col);
+        ImGui::PushStyleColor(ImGuiCol_Text, base_text_col); pushed_colors++;
 
         float max_w = 0.0f;
         for (int di = 0; di < display_count; di++) {
@@ -1040,7 +1076,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             g_first_frame = false;
         }
 
-        ImGui::PopStyleColor(11);
+        ImGui::PopStyleColor(pushed_colors);
         ImGui::End();
     }
 
@@ -1234,35 +1270,42 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     }
 
 #ifdef _WIN32
-    /* Manage all detached ImGui viewports (e.g., Settings window): 
-     * hide them from the taskbar and synchronize their TopMost status. */
-    {
+    /*
+     * Manage all detached ImGui viewports (e.g., Settings window):
+     * hide them from the taskbar and synchronize their TopMost status.
+     *
+     * Cache g_last_topmost so the expensive GetPlatformIO + enumeration
+     * is only done when the setting actually changes.  The inner loop
+     * already short-circuits per-viewport if no update is needed.
+     */
+    if (g_config.always_on_top != g_last_topmost) {
+        g_last_topmost = g_config.always_on_top;
         HWND main_hwnd = glfwGetWin32Window(g_window);
         ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
         for (int i = 0; i < pio.Viewports.Size; i++) {
             ImGuiViewport* vp = pio.Viewports[i];
             if (vp->PlatformHandle != NULL) {
                 HWND hwnd = glfwGetWin32Window((GLFWwindow*)vp->PlatformHandle);
-                
+
                 /* Exclude the main overlay window, which is already managed by apply_config_to_window() */
                 if (hwnd != NULL && hwnd != main_hwnd) {
                     LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-                    
+
                     /* Ensure the viewport remains a tool window (hidden from taskbar) */
                     LONG_PTR needed = exstyle | WS_EX_TOOLWINDOW;
                     needed &= ~WS_EX_APPWINDOW;
-                    
+
                     /* Check if the current Z-order state matches the global setting */
                     bool is_topmost = (exstyle & WS_EX_TOPMOST) != 0;
                     bool needs_z_update = (is_topmost != g_config.always_on_top);
-                    
+
                     if (exstyle != needed || needs_z_update) {
                         SetWindowLongPtr(hwnd, GWL_EXSTYLE, needed);
-                        
+
                         /* Apply HWND_TOPMOST or HWND_NOTOPMOST dynamically */
                         HWND insert_after = g_config.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST;
                         SetWindowPos(hwnd, insert_after, 0, 0, 0, 0,
-                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE 
+                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                                      | SWP_FRAMECHANGED | SWP_NOREDRAW);
                     }
                 }
