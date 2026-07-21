@@ -45,6 +45,13 @@ Click the Settings button to open:
 | **Only show current channel** | When checked, only users in the same channel as you are shown |
 | **Log to Mumble console** | Enable/disable logging of plugin messages to the Mumble console |
 | **Log FPS every 10s** | (Debug) Print current framerate to Mumble log every 10 seconds. Default off |
+| **VSync** | Enable/disable vertical sync. Default off, because some GPU drivers (NVIDIA/AMD) busy-wait on vsync causing high CPU usage. When enabled, all FPS settings below have no effect |
+| **Auto-detect monitor refresh rate** | Automatically set clickable/settings FPS to your monitor's refresh rate (validated 30-350 Hz). Re-detects on display changes and plugin start. When enabled, the two FPS inputs are locked |
+| **Passthrough FPS** | Target frames per second when mouse passthrough is active (15-400). Default 15 |
+| **Clickable FPS** | Target FPS when the main window is interactive / clickable (15-400). Default 60, or auto-detected refresh rate |
+| **Settings FPS** | Target FPS when the settings panel is open (15-400, highest priority). Default 60, or auto-detected refresh rate |
+| **Idle FPS** | Target FPS when no mouse activity is detected for the idle timeout period (15-400). Default 4 |
+| **Idle timeout (s)** | Seconds of no mouse activity before dropping to idle FPS (1-120). Default 5 |
 | **Show Window** (button) | Re-show a hidden window |
 | **Reset Position** (button) | Reset window position and size to defaults |
 | **Reset All Settings** (button) | Reset all settings to factory defaults |
@@ -63,6 +70,20 @@ When **Mouse passthrough** is enabled:
 - The title bar and settings button are hidden on the main window (they would be non-clickable anyway).
 - The **Settings panel** remains interactive and unaffected by passthrough, so you can still adjust settings.
 - Use `Ctrl+Shift+P` to quickly disable passthrough.
+
+### Framerate Control
+
+The plugin uses a high-resolution waitable timer (`CreateWaitableTimerExW`) for frame pacing — no spin-loop, no global `timeBeginPeriod` side effects.
+
+**Priority (highest to lowest):**
+1. Settings panel open → **Settings FPS**
+2. Window clickable (not passthrough) → **Clickable FPS**
+3. Passthrough + mouse idle → **Idle FPS**
+4. Passthrough + mouse active → **Passthrough FPS**
+
+**Auto-detect refresh rate:** When enabled, the plugin queries your monitor's current refresh rate via GLFW (window centre → monitor → `vidmode.refreshRate`). Validated to 30-350 Hz. Also responds to `WM_DISPLAYCHANGE` (resolution/refresh/monitor plug events) without polling overhead.
+
+**VSync warning:** Default off. NVIDIA/AMD drivers may busy-wait on `glfwSwapBuffers` with VSync enabled, burning CPU cycles. Limit framerate instead.
 
 ### Speaker List Behavior
 
