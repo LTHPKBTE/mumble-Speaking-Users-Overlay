@@ -88,6 +88,9 @@ static bool             g_user_saw_speaking_after_hide = false;
 static volatile bool    g_request_show          = false;
 static volatile bool    g_request_reset_position = false;
 
+/* ---- Display change flag (set by WM_DISPLAYCHANGE in window proc) ---- */
+static volatile bool    g_display_changed       = false;
+
 /* ---- Optimization: cached values to avoid redundant work ---- */
 static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
 
@@ -219,6 +222,60 @@ static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM
 }
 
 /* ========================================================================
+ * Auto-detect monitor refresh rate (30-350 Hz, clamped)
+ * Returns the detected rate, or 0 on failure.
+ * ======================================================================== */
+static int detect_monitor_refresh_rate(void) {
+    if (g_window == NULL) return 0;
+
+    /* Find which monitor the window centre falls on */
+    int wx, wy, ww, wh;
+    glfwGetWindowPos(g_window, &wx, &wy);
+    glfwGetWindowSize(g_window, &ww, &wh);
+    int cx = wx + ww / 2;
+    int cy = wy + wh / 2;
+
+    int count;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int i = 0; i < count; i++) {
+        int mx, my, mw, mh;
+        glfwGetMonitorWorkarea(monitors[i], &mx, &my, &mw, &mh);
+        if (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh) {
+            const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+            if (mode != NULL && mode->refreshRate > 0) {
+                int rate = (int)(mode->refreshRate + 0.5f);
+                if (rate < 30)  return 30;
+                if (rate > 350) return 350;
+                return rate;
+            }
+            break;
+        }
+    }
+    /* Fallback: try the primary monitor */
+    if (count > 0) {
+        const GLFWvidmode* mode = glfwGetVideoMode(monitors[0]);
+        if (mode != NULL && mode->refreshRate > 0) {
+            int rate = (int)(mode->refreshRate + 0.5f);
+            if (rate < 30)  return 30;
+            if (rate > 350) return 350;
+            return rate;
+        }
+    }
+    return 0;
+}
+
+/* Apply auto-detected refresh to clickable + settings FPS (if enabled). */
+static void overlay_apply_auto_refresh(void) {
+    if (!g_config.auto_detect_refresh) return;
+    int rate = detect_monitor_refresh_rate();
+    if (rate > 0) {
+        g_config.fps_clickable    = rate;
+        g_config.fps_settings_open = rate;
+        OW_LOGF("Auto-detected monitor refresh rate: %d Hz", rate);
+    }
+}
+
+/* ========================================================================
  * Configuration defaults
  * ======================================================================== */
 overlay_config_t overlay_config_default(void) {
@@ -247,6 +304,7 @@ overlay_config_t overlay_config_default(void) {
     cfg.fps_settings_open = 60;
     cfg.fps_idle         = 4;
     cfg.idle_fps_timeout = 5.0f;
+    cfg.auto_detect_refresh = true;
     return cfg;
 }
 
@@ -312,6 +370,7 @@ static void overlay_config_save(void) {
     fprintf(f, "fps_settings_open=%d\n", g_config.fps_settings_open);
     fprintf(f, "fps_idle=%d\n", g_config.fps_idle);
     fprintf(f, "idle_fps_timeout=%.1f\n", (double)g_config.idle_fps_timeout);
+    fprintf(f, "auto_detect_refresh=%d\n", g_config.auto_detect_refresh ? 1 : 0);
     fclose(f);
 }
 
@@ -388,6 +447,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "fps_settings_open=%d", &ival) == 1) cfg->fps_settings_open = ival;
         else if (sscanf(line, "fps_idle=%d", &ival) == 1) cfg->fps_idle = ival;
         else if (sscanf(line, "idle_fps_timeout=%f", &fval) == 1) cfg->idle_fps_timeout = fval;
+        else if (sscanf(line, "auto_detect_refresh=%d", &ival) == 1) cfg->auto_detect_refresh = (ival != 0);
     }
     fclose(f);
 }
@@ -436,6 +496,7 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.fps_settings_open  = cfg->fps_settings_open;
         g_config.fps_idle           = cfg->fps_idle;
         g_config.idle_fps_timeout   = cfg->idle_fps_timeout;
+        g_config.auto_detect_refresh = cfg->auto_detect_refresh;
     }
     detect_system_language();
 
@@ -481,6 +542,9 @@ int overlay_window_init(const overlay_config_t *cfg) {
         glfwSwapInterval(0);
         g_frame_target_interval = 1.0 / (double)g_config.fps_passthrough;
     }
+
+    /* Auto-detect monitor refresh rate on first start (before applying config). */
+    overlay_apply_auto_refresh();
 
     /* Create high-resolution waitable timer (Win10 1803+, no global side effects). */
     g_frame_timer = CreateWaitableTimerExW(NULL, NULL,
@@ -603,6 +667,12 @@ static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, 
         style->styleNew &= ~WS_EX_APPWINDOW;
     }
 
+    /* Display mode changed (resolution / refresh rate / monitor plugged).
+     * Set flag to re-detect on next frame — cheap, low-frequency event. */
+    if (msg == WM_DISPLAYCHANGE) {
+        g_display_changed = true;
+    }
+
     if (msg == WM_NCHITTEST && g_config.mouse_passthrough) {
         return HTTRANSPARENT;
     }
@@ -718,6 +788,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             || io.WantCaptureMouse) {
             g_last_user_input_time = ImGui::GetTime();
         }
+    }
+
+    /* ---- Process display change (monitor resolution / refresh rate) ---- */
+    if (g_display_changed) {
+        g_display_changed = false;
+        overlay_apply_auto_refresh();
+        apply_config_to_window();
     }
 
     /* ---- Process global keyboard shortcuts ---- */
@@ -1232,25 +1309,43 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                             "⚠ Some GPU drivers busy-wait on VSync, causing high CPU"));
                 }
 
+                /* Auto-detect monitor refresh rate */
+                {
+                    bool old_auto = g_config.auto_detect_refresh;
+                    if (ImGui::Checkbox(LOC("自动检测显示器刷新率", "Auto-detect monitor refresh rate"),
+                                        &g_config.auto_detect_refresh)) {
+                        settings_changed = true;
+                        if (g_config.auto_detect_refresh && !old_auto) {
+                            overlay_apply_auto_refresh();
+                        }
+                    }
+                }
+
                 ImGui::Separator();
 
                 /* Helper: FPS input with +/-1 buttons and 15/30/60 presets */
-                auto fps_input = [&](const char* label, const char* label_en, int* fps) {
+                auto fps_input = [&](const char* label, const char* label_en, int* fps, bool disabled) {
                     ImGui::Text("%s", LOC(label, label_en));
                     ImGui::SameLine(180.0f);
                     ImGui::PushItemWidth(60.0f);
-                    if (ImGui::InputInt((std::string("##fps_") + label_en).c_str(), fps, 0, 0, ImGuiInputTextFlags_None)) {
+                    ImGuiInputTextFlags flags = ImGuiInputTextFlags_None;
+                    if (disabled) flags |= ImGuiInputTextFlags_ReadOnly;
+                    if (disabled) ImGui::BeginDisabled();
+                    if (ImGui::InputInt((std::string("##fps_") + label_en).c_str(), fps, 0, 0, flags)) {
                         if (*fps < 15) *fps = 15;
                         if (*fps > 400) *fps = 400;
                         settings_changed = true;
                     }
+                    if (disabled) ImGui::EndDisabled();
                     ImGui::PopItemWidth();
                     ImGui::SameLine();
+                    if (disabled) ImGui::BeginDisabled();
                     if (ImGui::SmallButton((std::string("15##") + label_en).c_str())) { *fps = 15;  settings_changed = true; }
                     ImGui::SameLine();
                     if (ImGui::SmallButton((std::string("30##") + label_en).c_str())) { *fps = 30;  settings_changed = true; }
                     ImGui::SameLine();
                     if (ImGui::SmallButton((std::string("60##") + label_en).c_str())) { *fps = 60;  settings_changed = true; }
+                    if (disabled) ImGui::EndDisabled();
                 };
 
                 ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
@@ -1258,10 +1353,18 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                         "Priority: Settings panel > Clickable > Idle > Passthrough. Range 15-400."));
 
                 if (!g_config.vsync_enabled) {
-                    fps_input("点击穿透时 FPS", "Passthrough FPS", &g_config.fps_passthrough);
-                    fps_input("可点击时 FPS", "Clickable FPS", &g_config.fps_clickable);
-                    fps_input("打开设置时 FPS", "Settings FPS", &g_config.fps_settings_open);
-                    fps_input("无活动时 FPS", "Idle FPS", &g_config.fps_idle);
+                    bool auto_locked = g_config.auto_detect_refresh;
+
+                    fps_input("点击穿透时 FPS", "Passthrough FPS", &g_config.fps_passthrough, false);
+                    fps_input("可点击时 FPS", "Clickable FPS", &g_config.fps_clickable, auto_locked);
+                    fps_input("打开设置时 FPS", "Settings FPS", &g_config.fps_settings_open, auto_locked);
+                    fps_input("无活动时 FPS", "Idle FPS", &g_config.fps_idle, false);
+
+                    if (auto_locked) {
+                        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                            LOC("可点击/设置 FPS 由显示器刷新率自动决定。",
+                                "Clickable/Settings FPS auto-set from monitor refresh rate."));
+                    }
 
                     ImGui::Text(LOC("无活动超时(秒)", "Idle timeout (s)"));
                     ImGui::SameLine(180.0f);
@@ -1334,6 +1437,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.fps_settings_open  = def.fps_settings_open;
                 g_config.fps_idle           = def.fps_idle;
                 g_config.idle_fps_timeout   = def.idle_fps_timeout;
+                g_config.auto_detect_refresh = def.auto_detect_refresh;
+                /* Re-detect when resetting all settings */
+                overlay_apply_auto_refresh();
                 g_config.window_x = def.window_x;
                 g_config.window_y = def.window_y;
                 g_config.window_width = def.window_width;

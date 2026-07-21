@@ -46,6 +46,7 @@ typedef struct {
     int   fps_settings_open;      /* target FPS when settings panel is open (15-400, highest priority) */
     int   fps_idle;               /* target FPS after idle timeout with no user interaction (15-400) */
     float idle_fps_timeout;       /* seconds of no mouse activity before dropping to fps_idle */
+    bool  auto_detect_refresh;    /* auto-detect monitor refresh rate for clickable/settings FPS */
 } overlay_config_t;
 
 /* Get default configuration */
