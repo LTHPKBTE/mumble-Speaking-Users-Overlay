@@ -2,10 +2,8 @@ name: CI / Build
 
 on:
   push:
-    branches: [main, master, dev]
+    branches: [master]
     tags: ['v*']
-  pull_request:
-    branches: [main, master, dev]
   workflow_dispatch:
 
 jobs:
