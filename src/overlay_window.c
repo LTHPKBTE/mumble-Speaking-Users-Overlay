@@ -1432,7 +1432,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             if (ImGui::Checkbox(LOC("鼠标穿透", "Mouse passthrough"), &g_config.mouse_passthrough)) settings_changed = true;
             if (g_config.mouse_passthrough) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f),
-                    LOC("启用后将无法用鼠标点击窗口。\n按 Ctrl+Shift+P 可关闭穿透。", "Cannot click the window once enabled.\nPress Ctrl+Shift+P to disable."));
+                    LOC("启用后将无法用鼠标点击窗口。\n使用快捷键可关闭穿透。", "Cannot click the window once enabled.\nUse the hotkey to disable passthrough."));
             }
 
             ImGui::Separator();
@@ -1639,7 +1639,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     &g_config.hotkey_show_vk, &g_config.hotkey_show_mods, 2);
 
                 /* Compatibility mode checkbox */
-                if (ImGui::Checkbox(LOC("兼容模式 (Hook 回退)", "Compatibility mode (Hook fallback)"),
+                if (ImGui::Checkbox(LOC("兼容模式", "Compatibility mode"),
                                     &g_config.hotkey_compat_mode)) {
                     settings_changed = true;
                     if (g_config.hotkey_compat_mode) {
@@ -1650,12 +1650,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 }
                 if (g_config.hotkey_compat_mode) {
                     ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.15f, 1.0f),
-                        LOC("兼容模式使用键盘 Hook 检测快捷键，可能与其他程序同时触发。",
-                            "Compat mode uses a keyboard hook — may trigger simultaneously with other apps."));
+                        LOC("兼容模式下快捷键可能与其他程序同时触发。",
+                            "Hotkeys may trigger in other apps simultaneously in this mode."));
                 } else {
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("使用 RegisterHotKey 注册快捷键 — 零延迟，无性能影响。如快捷键被其他程序占用，请更换组合键。",
-                            "Hotkeys registered via RegisterHotKey — zero latency, no performance impact. Change key combination if occupied."));
+                        LOC("快捷键被占用时，请更换组合键或启用兼容模式。",
+                            "If the hotkey is occupied, change the combination or enable compatibility mode."));
                 }
             }
 
@@ -1671,8 +1671,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 if (g_config.vsync_enabled) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-                        LOC("⚠ 部分显卡驱动会在等待VSync时空转，导致高CPU占用",
-                            "⚠ Some GPU drivers busy-wait on VSync, causing high CPU"));
+                        LOC("⚠ 部分系统上VSync可能导致高CPU占用",
+                            "⚠ VSync may cause high CPU usage on some systems"));
                 }
 
                 /* Auto-detect monitor refresh rate */
