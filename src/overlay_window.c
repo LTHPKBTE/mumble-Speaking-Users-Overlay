@@ -99,6 +99,9 @@ static float   g_drag_mouse_y = 0.0f;
 /* ---- Height auto-sizing ---- */
 static int     g_last_content_h = 0;
 
+/* ---- Debug FPS periodic logging ---- */
+static double  g_last_fps_log_time = 0.0;
+
 /* ---- Global keyboard hook ---- */
 static HHOOK  g_keyboard_hook     = NULL;
 static WNDPROC g_prev_wndproc       = NULL;
@@ -203,6 +206,7 @@ overlay_config_t overlay_config_default(void) {
     cfg.idle_timeout_seconds = 5;
     cfg.show_current_channel_only = false;
     cfg.mumble_logging_enabled = true;
+    cfg.debug_show_fps = false;
     return cfg;
 }
 
@@ -261,6 +265,7 @@ static void overlay_config_save(void) {
     fprintf(f, "idle_timeout_seconds=%d\n", g_config.idle_timeout_seconds);
     fprintf(f, "show_current_channel_only=%d\n", g_config.show_current_channel_only ? 1 : 0);
     fprintf(f, "mumble_logging_enabled=%d\n", g_config.mumble_logging_enabled ? 1 : 0);
+    fprintf(f, "debug_show_fps=%d\n", g_config.debug_show_fps ? 1 : 0);
     fclose(f);
 }
 
@@ -310,6 +315,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "show_current_channel_only=%d", &ival) == 1) cfg->show_current_channel_only = (ival != 0);
         else if (sscanf(line, "dangerous_alpha_allowed=%d", &ival) == 1) cfg->dangerous_alpha_allowed = (ival != 0);
         else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
+        else if (sscanf(line, "debug_show_fps=%d", &ival) == 1) cfg->debug_show_fps = (ival != 0);
     }
     fclose(f);
 }
@@ -583,6 +589,15 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+
+    /* ---- Debug: periodic FPS logging ---- */
+    if (g_config.debug_show_fps) {
+        double now = ImGui::GetTime();
+        if (now - g_last_fps_log_time >= 10.0) {
+            g_last_fps_log_time = now;
+            OW_LOGF("FPS: %.1f", (double)ImGui::GetIO().Framerate);
+        }
+    }
 
     /* ---- Process global keyboard shortcuts ---- */
     if (InterlockedCompareExchange(&g_hotkey_toggle_passthrough, 0, 1) == 1) {
@@ -1071,6 +1086,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::Separator();
 
             if (ImGui::Checkbox(LOC("在 Mumble 输出日志", "Log to Mumble console"), &g_config.mumble_logging_enabled)) settings_changed = true;
+
+            ImGui::Separator();
+
+            /* ---- Debug options ---- */
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                LOC("调试选项", "Debug options"));
+            if (ImGui::Checkbox(LOC("每10秒输出帧率到日志", "Log FPS every 10s"), &g_config.debug_show_fps)) settings_changed = true;
 
             // Only refresh window properties when the user actually changed a relevant setting
             if (settings_changed) {

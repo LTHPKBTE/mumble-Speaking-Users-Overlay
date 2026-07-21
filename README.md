@@ -43,6 +43,8 @@ Click the Settings button to open:
 | **Idle user opacity** | Opacity for non-speaking/recent users (0.0 ~ 1.0). Also capped at 0.2 when dangerous mode is off |
 | **Idle timeout (s)** | Seconds before an idle user is removed from the list (1~120) |
 | **Only show current channel** | When checked, only users in the same channel as you are shown |
+| **Log to Mumble console** | Enable/disable logging of plugin messages to the Mumble console |
+| **Log FPS every 10s** | (Debug) Print current framerate to Mumble log every 10 seconds. Default off |
 | **Show Window** (button) | Re-show a hidden window |
 | **Reset Position** (button) | Reset window position and size to defaults |
 | **Reset All Settings** (button) | Reset all settings to factory defaults |

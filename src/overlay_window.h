@@ -39,6 +39,7 @@ typedef struct {
     int   idle_timeout_seconds; /* seconds before a passive user is pruned (only when show_recent_speakers) */
     bool  show_current_channel_only; /* only show users in the same channel as local user */
     bool  mumble_logging_enabled; /* whether to print log messages via MumbleAPI */
+    bool  debug_show_fps;         /* print FPS to Mumble log every 10 seconds (debug) */
 } overlay_config_t;
 
 /* Get default configuration */
