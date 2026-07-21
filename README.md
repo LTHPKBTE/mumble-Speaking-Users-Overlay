@@ -100,7 +100,7 @@ If the window is off-screen or mispositioned, use **Settings > Reset Position** 
 All configurable settings are saved to disk immediately when changed in the Settings panel, and also when the plugin shuts down. They are restored automatically on next load. If the config directory doesn't exist, it is created automatically.
 
 Saved config location:
-- Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
+- Windows: `%APPDATA%\Mumble\Mumble\SpeakingOverlay.cfg`
 
 ## Prebuilt Binary
 
@@ -146,7 +146,7 @@ cmake --build build
 3. Enable the plugin in the list.
 
 **Manual install:**
-- Windows: Copy `plugin.dll` to `%APPDATA%\Mumble\Plugins\`
+- Windows: Copy `plugin.dll` to `%APPDATA%\Mumble\Mumble\Plugins\`
 
 **Bundle as .mumble_plugin (optional):**
 ```bash

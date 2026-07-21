@@ -98,7 +98,7 @@
 所有可调节的配置在设置面板中修改时立即保存到磁盘，插件关闭时也会保存，下次启动自动恢复。若配置目录不存在则自动创建。
 
 配置文件位置：
-- Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
+- Windows: `%APPDATA%\Mumble\Mumble\SpeakingOverlay.cfg`
 
 ## 预构建二进制文件
 
@@ -144,7 +144,7 @@ cmake --build build
 3. 在列表中启用插件。
 
 **手动安装：**
-- Windows：将 `plugin.dll` 复制到 `%APPDATA%\Mumble\Plugins\`
+- Windows：将 `plugin.dll` 复制到 `%APPDATA%\Mumble\Mumble\Plugins\`
 
 **打包为 .mumble_plugin（可选）：**
 ```bash

@@ -1,6 +1,8 @@
-# Technical Notes — Speaking Users Overlay
+# Technical Notes
 
 This document covers implementation details and design decisions. For usage, build, and installation, see [README.md](./README.md).
+
+!! Notice: This document was generated autonomously by AI; I make no guarantees regarding its accuracy or reliability, and I sincerely apologize for any errors it may contain. !!
 
 ## Table of Contents
 
@@ -119,13 +121,11 @@ When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers
 - CPU usage pinned to 100% of one core at high refresh rates (e.g., 144 Hz).
 - The effect is especially pronounced for applications like overlays that have minimal GPU work per frame.
 
-**After a period of inactivity**, some drivers switch from busy-wait to interrupt-based wait, which is why CPU usage "mysteriously drops" after leaving the overlay idle for a while.
-
-**The fix**: Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming near-zero CPU between frames.
+Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming near-zero CPU between frames.
 
 ## glfwSetWindowAttrib Wrapper
 
-The GLFW upstream function `_glfwSetWindowMousePassthroughWin32` calls expensive Win32 API functions (`SetWindowLongPtr`, `SetWindowPos`, `SetLayeredWindowAttributes`) **every frame**, even when the attribute hasn't changed. This was costing ~70 µs per frame at 144 Hz (wasted work, though not the dominant CPU consumer — the GPU driver vsync busy-wait was).
+The GLFW upstream function `_glfwSetWindowMousePassthroughWin32` calls expensive Win32 API functions (`SetWindowLongPtr`, `SetWindowPos`, `SetLayeredWindowAttributes`) every frame, even when the attribute hasn't changed. This was costing ~70 µs per frame at 144 Hz (wasted work, though not the dominant CPU consumer — the GPU driver vsync busy-wait was).
 
 ### Solution
 
