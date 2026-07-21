@@ -14,11 +14,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 /* ---- Fake speaker data for testing ---- */
 static const char *fake_names[] = {
@@ -74,11 +70,7 @@ int main(void) {
 
     /* Wait until render thread exits (user closes window) */
     while (render_thread_is_running()) {
-#ifdef _WIN32
         Sleep(100);
-#else
-        usleep(100000);
-#endif
     }
 
     printf("Overlay window closed. Goodbye!\n");

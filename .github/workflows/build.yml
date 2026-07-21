@@ -49,67 +49,12 @@ jobs:
         continue-on-error: true
 
   # ==============================================================
-  # Linux — GCC, build libplugin.so
-  # ==============================================================
-  build-linux:
-    name: Linux (GCC)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
-
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type || 'Release' }}
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Upload plugin.so
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-linux-x64-${{ inputs.build_type || 'Release' }}
-          path: build/plugin.so
-          if-no-files-found: error
-
-  # ==============================================================
-  # macOS — Clang, build libplugin.dylib
-  # ==============================================================
-  build-macos:
-    name: macOS (Clang)
-    runs-on: macos-latest
-    steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type || 'Release' }}
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Upload plugin.dylib
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-macos-x64-${{ inputs.build_type || 'Release' }}
-          path: build/plugin.dylib
-          if-no-files-found: error
-
-  # ==============================================================
-  # Release — package all artifacts into .mumble_plugin bundle
+  # Release — create GitHub Release with plugin.dll
   # (on tag push or manual dispatch)
   # ==============================================================
   release:
     name: Create Release
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -127,13 +72,11 @@ jobs:
           mkdir -p release
           # Copy manifest
           cp manifest.xml release/
-          # Copy platform binaries
-          cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.dll    release/plugin.dll    2>/dev/null || true
-          cp artifacts/plugin-linux-x64-${BUILD_TYPE}/plugin.so    release/plugin.so  2>/dev/null || true
-          cp artifacts/plugin-macos-x64-${BUILD_TYPE}/plugin.dylib release/plugin.dylib 2>/dev/null || true
+          # Copy Windows binary
+          cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.dll release/plugin.dll 2>/dev/null || true
           # Create .mumble_plugin zip
           cd release
-          zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll plugin.so plugin.dylib 2>/dev/null || true
+          zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll 2>/dev/null || true
           cd ..
 
       - name: Create GitHub Release
@@ -142,8 +85,6 @@ jobs:
           files: |
             SpeakingUsersOverlay.mumble_plugin
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.dll
-            artifacts/plugin-linux-x64-${{ inputs.build_type || 'Release' }}/plugin.so
-            artifacts/plugin-macos-x64-${{ inputs.build_type || 'Release' }}/plugin.dylib
           body: |
             ## Installation
             1. Download `SpeakingUsersOverlay.mumble_plugin`
@@ -154,5 +95,7 @@ jobs:
             - Real-time list of talking / whispering / shouting users
             - Adjustable window transparency
             - Always on top + mouse passthrough mode
+
+            > **Note:** Currently only Windows is officially supported. Linux and macOS users may try building from source, but the author does not have testing environments for those platforms.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -11,34 +11,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
 #include <windows.h>
 typedef HANDLE thread_handle_t;
 #define THREAD_RETURN DWORD WINAPI
 #define THREAD_EXIT(code) return (code)
-#else
-#include <pthread.h>
-#include <unistd.h>
-typedef pthread_t thread_handle_t;
-#define THREAD_RETURN void *
-#define THREAD_EXIT(code) return NULL
-#endif
 
 /* ---- Atomic helpers ---- */
-#ifdef _WIN32
 /* Use Interlocked* on Windows */
 static LONG g_running   = 0;  /* 0=idle, 1=running, -1=stopping */
 static LONG g_stop_flag = 0;
 #define ATOMIC_SET(dst, val)  InterlockedExchange(&(dst), (LONG)(val))
 #define ATOMIC_GET(src)       InterlockedCompareExchange(&(src), 0, 0)
-#else
-/* Use C++11 std::atomic (compiled as C++) */
-#include <atomic>
-static std::atomic<int>  g_running(0);
-static std::atomic<bool> g_stop_flag(false);
-#define ATOMIC_SET(dst, val)  (dst).store((int)(val), std::memory_order_relaxed)
-#define ATOMIC_GET(src)       (src).load(std::memory_order_relaxed)
-#endif
 
 /* ---- Internal state ---- */
 static thread_handle_t g_render_thread;
@@ -103,45 +86,26 @@ int render_thread_start(const overlay_config_t *cfg,
 
     ATOMIC_SET(g_stop_flag, false);
 
-#ifdef _WIN32
     g_render_thread = CreateThread(NULL, 0, render_thread_proc, data, 0, NULL);
     if (g_render_thread == NULL) {
         free(data);
         return -3;
     }
-#else
-    int rc = pthread_create(&g_render_thread, NULL, render_thread_proc, data);
-    if (rc != 0) {
-        free(data);
-        return -3;
-    }
-#endif
 
     return 0;
 }
 
 void render_thread_stop(void) {
     /* Atomically transition 1 -> -1 (stopping). Only ONE caller succeeds. */
-#ifdef _WIN32
     LONG prev = InterlockedCompareExchange(&g_running, -1, 1);
     if (prev != 1) {
         return;  /* already idle or another thread is stopping */
     }
-#else
-    int expected = 1;
-    if (!g_running.compare_exchange_strong(expected, -1)) {
-        return;
-    }
-#endif
 
     ATOMIC_SET(g_stop_flag, true);
 
-#ifdef _WIN32
     WaitForSingleObject(g_render_thread, 5000);
     CloseHandle(g_render_thread);
-#else
-    pthread_join(g_render_thread, NULL);
-#endif
 
     ATOMIC_SET(g_running, 0);
 }

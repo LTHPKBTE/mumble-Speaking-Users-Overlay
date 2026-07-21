@@ -12,11 +12,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <pthread.h>
-#endif
 
 /* Talking state mirrors Mumble_TalkingState from the API */
 typedef enum {

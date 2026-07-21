@@ -86,16 +86,16 @@
 
 配置文件位置：
 - Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
-- Linux:   `~/.config/mumble-overlay-plugin.cfg`
-- macOS:   `~/.config/mumble-overlay-plugin.cfg`
 
 ## 预构建二进制文件
 
-可以从 GitHub 仓库的 **Actions** 标签页下载各平台的预构建文件。找到最近一次成功的构建，滚动到 **Artifacts** 部分，下载对应平台的压缩包（例如 `plugin-windows.zip`、`plugin-linux.tar.gz` 或 `plugin-macos.tar.gz`），解压后按照下面的[安装教程](#4-安装到-mumble)操作。
+可以从 GitHub 仓库的 **Actions** 标签页下载预构建文件。找到最近一次成功的构建，滚动到 **Artifacts** 部分，下载 `plugin-windows-x64-Release`，解压后按照下面的[安装教程](#4-安装到-mumble)操作。
 
 > 预构建文件仅为了方便使用。如有安全顾虑，强烈建议审查源码并自行构建。
 
 ## 构建
+
+> **平台支持：** 目前仅官方支持 **Windows**。Linux 和 macOS 用户可以尝试自行构建，但作者没有对应平台的测试条件。欢迎贡献其他平台的支持。
 
 ### 1. 获取依赖
 
@@ -113,7 +113,7 @@ cmake -B build
 cmake --build build
 ```
 
-产物：`build/plugin.dll` (Windows)、`build/libplugin.so` (Linux)、`build/libplugin.dylib` (macOS)。
+产物：`build/Release/plugin.dll` (Windows)。
 
 ### 3. 独立测试（无需 Mumble）
 
@@ -127,13 +127,11 @@ cmake --build build
 
 **使用 Mumble 插件管理器：**
 1. 打开 Mumble，进入 **设置 > 插件**，点击 **安装插件**。
-2. 选择编译好的 `plugin.dll` (Windows)、`libplugin.so` (Linux) 或 `libplugin.dylib` (macOS)。
+2. 选择编译好的 `plugin.dll`。
 3. 在列表中启用插件。
 
 **手动安装：**
 - Windows：将 `plugin.dll` 复制到 `%APPDATA%\Mumble\Plugins\`
-- Linux：  将 `libplugin.so` 复制到 `~/.local/share/Mumble/Plugins/`
-- macOS：  将 `libplugin.dylib` 复制到 `~/Library/Application Support/Mumble/Plugins/`
 
 **打包为 .mumble_plugin（可选）：**
 ```bash

@@ -35,11 +35,6 @@ if(EXISTS "${GLFW_ROOT}/CMakeLists.txt")
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    # Linux CI images often lack wayland-scanner; build X11 only
-    if(UNIX AND NOT APPLE)
-        set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
-        set(GLFW_BUILD_X11     ON  CACHE BOOL "" FORCE)
-    endif()
     add_subdirectory(${GLFW_ROOT} EXCLUDE_FROM_ALL)
     set(GLFW_LIBRARIES glfw)
     set(GLFW_INCLUDE_DIR  "${GLFW_ROOT}/include")
@@ -102,18 +97,10 @@ target_compile_definitions(cimgui PUBLIC
 # Required for linking cimgui into a shared library (Linux)
 set_target_properties(cimgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-if(WIN32)
-    target_link_libraries(cimgui PUBLIC opengl32)
-    target_compile_definitions(cimgui PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-    )
-elseif(APPLE)
-    find_library(OpenGL_LIB OpenGL REQUIRED)
-    target_link_libraries(cimgui PUBLIC ${OpenGL_LIB})
-else()
-    find_package(OpenGL REQUIRED)
-    target_link_libraries(cimgui PUBLIC OpenGL::GL)
-endif()
+target_link_libraries(cimgui PUBLIC opengl32)
+target_compile_definitions(cimgui PRIVATE
+    _CRT_SECURE_NO_WARNINGS
+)
 
 target_compile_features(cimgui PUBLIC cxx_std_11)
 
@@ -151,13 +138,9 @@ target_link_libraries(plugin PRIVATE
     ${GLFW_LIBRARIES}
 )
 
-# Compiler flags
-if(MSVC)
-    target_compile_definitions(plugin PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(plugin PRIVATE /W3)
-else()
-    target_compile_options(plugin PRIVATE -Wall -Wextra)
-endif()
+# Compiler flags (MSVC)
+target_compile_definitions(plugin PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(plugin PRIVATE /W3)
 
 # Output basename (no lib prefix)
 set_target_properties(plugin PROPERTIES PREFIX "")
@@ -201,7 +184,5 @@ if(OVERLAY_BUILD_STANDALONE)
         ${GLFW_LIBRARIES}
     )
     target_compile_definitions(overlay_test PRIVATE OVERLAY_STANDALONE_TEST)
-    if(MSVC)
-        target_compile_definitions(overlay_test PRIVATE _CRT_SECURE_NO_WARNINGS)
-    endif()
+    target_compile_definitions(overlay_test PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()

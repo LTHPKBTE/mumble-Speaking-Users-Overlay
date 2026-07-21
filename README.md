@@ -88,16 +88,16 @@ All configurable settings are saved to disk immediately when changed in the Sett
 
 Saved config location:
 - Windows: `%APPDATA%\Mumble\SpeakingOverlay.cfg`
-- Linux:   `~/.config/mumble-overlay-plugin.cfg`
-- macOS:   `~/.config/mumble-overlay-plugin.cfg`
 
 ## Prebuilt Binary
 
-Prebuilt binaries for each platform are available from the **Actions** tab of the GitHub repository. Look for the latest successful workflow run, scroll to **Artifacts**, and download the archive for your platform (e.g. `plugin-windows.zip`, `plugin-linux.tar.gz`, or `plugin-macos.tar.gz`). Extract the plugin file and follow the [installation instructions](#4-install-to-mumble) below.
+Prebuilt binaries are available from the **Actions** tab of the GitHub repository. Look for the latest successful workflow run, scroll to **Artifacts**, and download `plugin-windows-x64-Release`. Extract the plugin file and follow the [installation instructions](#4-install-to-mumble) below.
 
 > Prebuilt binaries are provided for convenience. It is strongly recommended to review the source code and build from source if you have any security concerns.
 
 ## Build
+
+> **Platform support:** Currently only **Windows** is officially supported. Linux and macOS users may try building from source, but the author does not have testing environments for those platforms. Contributions for other platforms are welcome.
 
 ### 1. Get Dependencies
 
@@ -115,7 +115,7 @@ cmake -B build
 cmake --build build
 ```
 
-Output: `build/plugin.dll` (Windows), `build/libplugin.so` (Linux), or `build/libplugin.dylib` (macOS).
+Output: `build/Release/plugin.dll` (Windows).
 
 ### 3. Standalone Test (No Mumble Required)
 
@@ -129,13 +129,11 @@ cmake --build build
 
 **Using Mumble's plugin manager:**
 1. Open Mumble, go to **Settings > Plugins**. Click **Install Plugin**.
-2. Select the compiled `plugin.dll` (Windows), `libplugin.so` (Linux), or `libplugin.dylib` (macOS).
+2. Select the compiled `plugin.dll`.
 3. Enable the plugin in the list.
 
 **Manual install:**
 - Windows: Copy `plugin.dll` to `%APPDATA%\Mumble\Plugins\`
-- Linux:   Copy `libplugin.so` to `~/.local/share/Mumble/Plugins/`
-- macOS:   Copy `libplugin.dylib` to `~/Library/Application Support/Mumble/Plugins/`
 
 **Bundle as .mumble_plugin (optional):**
 ```bash

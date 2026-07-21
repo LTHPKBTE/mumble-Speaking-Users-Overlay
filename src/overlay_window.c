@@ -15,37 +15,15 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-#ifdef __APPLE__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#define GL_SILENCE_DEPRECATION
-#endif
-
 #include <GLFW/glfw3.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
-
-#ifdef _WIN32
 #include <windows.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
-/* Windows SDK provides GL/gl.h via glfw3.h auto-include */
-#else
-/* Minimal GL 1.1 declarations (link with -lGL / OpenGL.framework) */
-#define GL_COLOR_BUFFER_BIT 0x00004000
-extern "C" {
-void glClear(unsigned int mask);
-void glClearColor(float r, float g, float b, float a);
-void glViewport(int x, int y, int w, int h);
-}
-#endif
 
 /* ---- Overlay internal header ---- */
 #include "overlay_window.h"
@@ -77,18 +55,11 @@ void overlay_window_set_log_callback(overlay_log_fn fn) {
 static int g_lang_is_chinese = 0;
 
 static void detect_system_language(void) {
-#ifdef _WIN32
     LANGID langID = GetUserDefaultUILanguage();
     WORD primary  = PRIMARYLANGID(langID);
     g_lang_is_chinese = (primary == LANG_CHINESE
                          || primary == LANG_CHINESE_SIMPLIFIED
                          || primary == LANG_CHINESE_TRADITIONAL);
-#else
-    const char *lang = getenv("LANG");
-    if (lang != NULL) {
-        g_lang_is_chinese = (strncmp(lang, "zh", 2) == 0);
-    }
-#endif
 }
 
 #define LOC(chinese, english)  (g_lang_is_chinese ? (chinese) : (english))
@@ -128,19 +99,16 @@ static float   g_drag_mouse_y = 0.0f;
 /* ---- Height auto-sizing ---- */
 static int     g_last_content_h = 0;
 
-/* ---- Global keyboard hook (Windows only) ---- */
-#ifdef _WIN32
+/* ---- Global keyboard hook ---- */
 static HHOOK  g_keyboard_hook     = NULL;
 static WNDPROC g_prev_wndproc       = NULL;
 /* Thread-safe flags set by the keyboard hook, read by render thread */
 static volatile LONG g_hotkey_toggle_passthrough = 0;
 static volatile LONG g_hotkey_show_window        = 0;
 
+/* ---- Forward declarations ---- */
 static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-#endif
-
-/* ---- Forward declarations ---- */
 static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
 
@@ -155,24 +123,11 @@ static void load_cjk_font(void) {
 
     /* List of candidate CJK font paths (tried in order) */
     static const char *candidates[] = {
-#ifdef _WIN32
         "C:/Windows/Fonts/msyh.ttc",       /* Microsoft YaHei */
         "C:/Windows/Fonts/msyhbd.ttc",     /* Microsoft YaHei Bold */
         "C:/Windows/Fonts/simhei.ttf",     /* SimHei */
         "C:/Windows/Fonts/simsun.ttc",     /* SimSun */
         "C:/Windows/Fonts/yahei.ttf",      /* alternative */
-#elif defined(__APPLE__)
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/NotoSansCJK.ttc",
-#else
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
-#endif
         NULL
     };
 
@@ -206,9 +161,8 @@ static void load_cjk_font(void) {
 }
 
 /* ========================================================================
- * Global hotkey — low-level keyboard hook (Windows only)
+ * Global hotkey — low-level keyboard hook
  * ======================================================================== */
-#ifdef _WIN32
 static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *kb = (KBDLLHOOKSTRUCT *)lParam;
@@ -258,19 +212,11 @@ overlay_config_t overlay_config_default(void) {
  * ======================================================================== */
 static const char *overlay_config_path(void) {
     static char path[1024];
-#ifdef _WIN32
     const char *appdata = getenv("APPDATA");
     if (appdata) {
         snprintf(path, sizeof(path), "%s\\Mumble\\SpeakingOverlay.cfg", appdata);
         return path;
     }
-#else
-    const char *home = getenv("HOME");
-    if (home) {
-        snprintf(path, sizeof(path), "%s/.config/mumble-overlay-plugin.cfg", home);
-        return path;
-    }
-#endif
     return NULL;
 }
 
@@ -282,7 +228,6 @@ static void overlay_config_save(void) {
     }
 
     /* Ensure parent directory exists */
-#ifdef _WIN32
     {
         char dir[1024];
         snprintf(dir, sizeof(dir), "%s", cfg_path);
@@ -295,18 +240,6 @@ static void overlay_config_save(void) {
             }
         }
     }
-#else
-    {
-        char dir[1024];
-        snprintf(dir, sizeof(dir), "%s", cfg_path);
-        char *last_sep = strrchr(dir, '/');
-        if (last_sep != NULL) {
-            *last_sep = '\0';
-            /* mkdir -p style: ignore EEXIST */
-            mkdir(dir, 0755);
-        }
-    }
-#endif
 
     FILE *f = fopen(cfg_path, "w");
     if (!f) {
@@ -450,14 +383,12 @@ int overlay_window_init(const overlay_config_t *cfg) {
 
     glfwSetWindowPos(g_window, g_config.window_x, g_config.window_y);
 
-#ifdef _WIN32
     {
         HWND hwnd = glfwGetWin32Window(g_window);
         if (hwnd != NULL && g_prev_wndproc == NULL) {
             g_prev_wndproc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)overlay_window_proc);
         }
     }
-#endif
 
     glfwMakeContextCurrent(g_window);
     glfwSwapInterval(1);
@@ -490,14 +421,8 @@ int overlay_window_init(const overlay_config_t *cfg) {
         return OW_ERR_IMGUI;
     }
 
-#ifdef __APPLE__
-    const char *glsl_version = "#version 150";
-#else
-    const char *glsl_version = "#version 130";
-#endif
-
-    if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
-        OW_LOGF("Failed to init ImGui OpenGL3 backend (GLSL: %s)", glsl_version);
+    if (!ImGui_ImplOpenGL3_Init("#version 130")) {
+        OW_LOG("Failed to init ImGui OpenGL3 backend");
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         glfwDestroyWindow(g_window);
@@ -511,10 +436,9 @@ int overlay_window_init(const overlay_config_t *cfg) {
     /* Apply config (passthrough, toolwindow, topmost) via native/glfw APIs safely */
     apply_config_to_window();
 
-#ifdef _WIN32
+    /* Install keyboard hook for global hotkeys */
     g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, low_level_keyboard_proc,
                                        GetModuleHandle(NULL), 0);
-#endif
 
     g_first_frame = true;
 
@@ -554,7 +478,9 @@ static ImVec4 with_text_alpha(ImVec4 color) {
     return color;
 }
 
-#ifdef _WIN32
+/* ========================================================================
+ * Subclass window proc to enforce passthrough and toolwindow styles
+ * ======================================================================== */
 static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     /* Intercept style changes at the OS kernel level to enforce passthrough state */
     if (msg == WM_STYLECHANGING && wParam == GWL_EXSTYLE) {
@@ -577,7 +503,6 @@ static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, 
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-#endif
 
 static void apply_config_to_window(void) {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -596,7 +521,6 @@ static void apply_config_to_window(void) {
         g_config.mouse_passthrough ? GLFW_TRUE : GLFW_FALSE);
 #endif
 
-#ifdef _WIN32
     HWND hwnd = glfwGetWin32Window(g_window);
     if (hwnd) {
         LONG_PTR exstyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
@@ -628,7 +552,6 @@ static void apply_config_to_window(void) {
             0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
-#endif
 }
 
 /* ========================================================================
@@ -663,7 +586,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     ImGui::NewFrame();
 
     /* ---- Process global keyboard shortcuts ---- */
-#ifdef _WIN32
     if (InterlockedCompareExchange(&g_hotkey_toggle_passthrough, 0, 1) == 1) {
         g_config.mouse_passthrough = !g_config.mouse_passthrough;
         apply_config_to_window();
@@ -676,24 +598,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             glfwShowWindow(g_window);
         }
     }
-#else
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        bool ctrl  = io.KeyCtrl  || ImGui::IsKeyDown(ImGuiKey_LeftCtrl)  || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
-        bool shift = io.KeyShift || ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_P) && ctrl && shift) {
-            g_config.mouse_passthrough = !g_config.mouse_passthrough;
-            apply_config_to_window();
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_H) && ctrl && shift && g_window_hidden) {
-            g_window_hidden = false;
-            g_user_hid_window = false;
-            g_user_saw_speaking_after_hide = false;
-            glfwShowWindow(g_window);
-        }
-    }
-#endif
 
     /* ---- Handle request flags ---- */
     if (g_request_show && g_window_hidden) {
@@ -1269,7 +1173,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         }
     }
 
-#ifdef _WIN32
     /*
      * Manage all detached ImGui viewports (e.g., Settings window):
      * hide them from the taskbar and synchronize their TopMost status.
@@ -1312,7 +1215,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             }
         }
     }
-#endif
 
     glfwSwapBuffers(g_window);
 
@@ -1327,15 +1229,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
  * Shutdown
  * ======================================================================== */
 void overlay_window_shutdown(void) {
-#ifdef _WIN32
     if (g_keyboard_hook != NULL) {
         UnhookWindowsHookEx(g_keyboard_hook);
         g_keyboard_hook = NULL;
     }
-#endif
 
     if (g_window != NULL) {
-#ifdef _WIN32
         if (g_prev_wndproc != NULL) {
             HWND hwnd = glfwGetWin32Window(g_window);
             if (hwnd != NULL) {
@@ -1343,7 +1242,6 @@ void overlay_window_shutdown(void) {
             }
             g_prev_wndproc = NULL;
         }
-#endif
         overlay_config_save();
 
         ImGui_ImplOpenGL3_Shutdown();
@@ -1372,7 +1270,3 @@ void overlay_window_request_show(void) {
 void overlay_window_request_reset_position(void) {
     g_request_reset_position = true;
 }
-
-#ifdef __APPLE__
-#pragma clang diagnostic pop
-#endif

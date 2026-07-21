@@ -11,17 +11,10 @@
 #include <string.h>
 
 /* ---- Synchronisation ---- */
-#ifdef _WIN32
 static SRWLOCK g_lock;
 #define LOCK_INIT()   InitializeSRWLock(&g_lock)
 #define LOCK_ACQ()    AcquireSRWLockExclusive(&g_lock)
 #define LOCK_REL()    ReleaseSRWLockExclusive(&g_lock)
-#else
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-#define LOCK_INIT()   /* already done */
-#define LOCK_ACQ()    pthread_mutex_lock(&g_lock)
-#define LOCK_REL()    pthread_mutex_unlock(&g_lock)
-#endif
 
 /* ---- Internal state ---- */
 static speaking_user_t *g_head = NULL;
@@ -29,9 +22,7 @@ static speaking_user_t *g_head = NULL;
 /* ---- Public API ---- */
 
 void speaking_users_init(void) {
-#ifdef _WIN32
     InitializeSRWLock(&g_lock);
-#endif
     g_head = NULL;
 }
 
