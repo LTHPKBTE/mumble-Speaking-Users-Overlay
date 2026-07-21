@@ -1187,10 +1187,19 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     {
         ImGuiIO& io = ImGui::GetIO();
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            GLFWwindow *backup_current = glfwGetCurrentContext();
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
-            glfwMakeContextCurrent(backup_current);
+            ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+            /* Only perform per-viewport context switches when there are
+             * actually detached platform windows (e.g. Settings panel).
+             * When only the main viewport exists (Size == 1), the
+             * makeContextCurrent + UpdatePlatformWindows + RenderPlatformWindowsDefault
+             * dance is a no-op that still calls into wglMakeCurrent every frame,
+             * wasting ~9% CPU according to profiling. */
+            if (pio.Viewports.Size > 1) {
+                GLFWwindow *backup_current = glfwGetCurrentContext();
+                ImGui::UpdatePlatformWindows();
+                ImGui::RenderPlatformWindowsDefault();
+                glfwMakeContextCurrent(backup_current);
+            }
         }
     }
 
