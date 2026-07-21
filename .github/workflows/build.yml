@@ -28,11 +28,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup CMake & MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Configure
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -A x64
 
       - name: Build
         run: cmake --build build --config ${{ inputs.build_type || 'Release' }} --parallel
@@ -45,7 +42,7 @@ jobs:
           if-no-files-found: error
 
       - name: Standalone test (skeleton)
-        run: cmake -B build_test -G "Visual Studio 17 2022" -A x64 -DOVERLAY_BUILD_STANDALONE=ON
+        run: cmake -B build_test -A x64 -DOVERLAY_BUILD_STANDALONE=ON
         continue-on-error: true
 
   # ==============================================================
