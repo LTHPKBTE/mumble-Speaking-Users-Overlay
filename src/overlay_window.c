@@ -133,6 +133,7 @@ static void prof_tick(void) {
 /* ---- High-resolution waitable timer (replaces Sleep + timeBeginPeriod) ---- */
 static HANDLE  g_frame_timer = NULL;
 static bool    g_using_time_period = false;  /* true if fallback timer needed timeBeginPeriod */
+static void cleanup_time_period(void);  /* forward decl — defined near shutdown */
 
 /* ---- Current effective target interval (determined each frame from priority rules) ---- */
 static double  g_frame_target_interval = 0.0;
@@ -784,7 +785,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     /* ---- Idle detection: track last user input for fps_idle ---- */
     {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.MouseMoved || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
+        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f
+            || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
+            || io.MouseWheel != 0.0f
             || io.WantCaptureMouse) {
             g_last_user_input_time = ImGui::GetTime();
         }
