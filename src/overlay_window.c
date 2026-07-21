@@ -91,6 +91,9 @@ static volatile bool    g_request_reset_position = false;
 /* ---- Display change flag (set by WM_DISPLAYCHANGE in window proc) ---- */
 static volatile bool    g_display_changed       = false;
 
+/* ---- RegisterHotKey conflict flag — triggers settings auto-popup on first frame ---- */
+static volatile bool    g_hotkey_conflict_on_init = false;
+
 /* ---- Optimization: cached values to avoid redundant work ---- */
 static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
 
@@ -141,17 +144,32 @@ static double  g_last_frame_time       = 0.0;
 
 /* ---- Idle detection for fps_idle ---- */
 static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse move/click/scroll */
-static HHOOK  g_keyboard_hook     = NULL;
-static WNDPROC g_prev_wndproc       = NULL;
-/* Thread-safe flags set by the keyboard hook, read by render thread */
+
+/* ---- Global hotkeys: RegisterHotKey (primary) + compat-mode hook thread ---- */
+#define HOTKEY_ID_TOGGLE        100
+#define HOTKEY_ID_SHOW          101
+#define HOTKEY_ID_TOGGLE_STAGING 102  /* staging slot for atomic swap */
+#define HOTKEY_ID_SHOW_STAGING  103
+
 static volatile LONG g_hotkey_toggle_passthrough = 0;
 static volatile LONG g_hotkey_show_window        = 0;
 
+/* Compatibility-mode low-level keyboard hook thread (opt-in, only for conflicted hotkeys) */
+static HHOOK  g_compat_hook       = NULL;
+static HANDLE g_compat_hook_thread = NULL;
+static volatile bool g_compat_hook_running = false;
+
+/* WNDPROC for subclassing */
+static WNDPROC g_prev_wndproc       = NULL;
+
 /* ---- Forward declarations ---- */
-static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
+static void register_all_hotkeys(void);
+static void unregister_all_hotkeys(void);
+static void start_compat_hook_thread(void);
+static void stop_compat_hook_thread(void);
 
 static float clamp01f(float v);
 static ImVec4 with_text_alpha(ImVec4 color);
@@ -202,24 +220,139 @@ static void load_cjk_font(void) {
 }
 
 /* ========================================================================
- * Global hotkey — low-level keyboard hook
+ * Global hotkeys — RegisterHotKey + compat-mode hook thread
  * ======================================================================== */
-static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION) {
-        KBDLLHOOKSTRUCT *kb = (KBDLLHOOKSTRUCT *)lParam;
-        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
-            if (ctrl && shift) {
-                if (kb->vkCode == 'P') {
-                    InterlockedExchange(&g_hotkey_toggle_passthrough, 1);
-                } else if (kb->vkCode == 'H') {
-                    InterlockedExchange(&g_hotkey_show_window, 1);
-                }
+
+/* Convert a Win32 VK + modifiers to a RegisterHotKey call. MOD_NOREPEAT
+ * prevents the hotkey from auto-repeating while held. */
+static bool register_one_hotkey(HWND hwnd, int id, int vk, int mods) {
+    if (vk == 0 || hwnd == NULL) return false;
+    UINT fsModifiers = (UINT)mods | MOD_NOREPEAT;
+    return RegisterHotKey(hwnd, (int)id, fsModifiers, (UINT)vk) != 0;
+}
+
+static void register_all_hotkeys(void) {
+    if (g_window == NULL) return;
+    HWND hwnd = glfwGetWin32Window(g_window);
+    if (hwnd == NULL) return;
+
+    register_one_hotkey(hwnd, HOTKEY_ID_TOGGLE,
+        g_config.hotkey_toggle_vk, g_config.hotkey_toggle_mods);
+    register_one_hotkey(hwnd, HOTKEY_ID_SHOW,
+        g_config.hotkey_show_vk, g_config.hotkey_show_mods);
+}
+
+static void unregister_all_hotkeys(void) {
+    if (g_window == NULL) return;
+    HWND hwnd = glfwGetWin32Window(g_window);
+    if (hwnd == NULL) return;
+
+    UnregisterHotKey(hwnd, HOTKEY_ID_TOGGLE);
+    UnregisterHotKey(hwnd, HOTKEY_ID_SHOW);
+    UnregisterHotKey(hwnd, HOTKEY_ID_TOGGLE_STAGING);
+    UnregisterHotKey(hwnd, HOTKEY_ID_SHOW_STAGING);
+}
+
+/* Try an atomic swap: register candidate on staging ID, then swap. */
+static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
+                                      int vk, int mods) {
+    if (vk == 0) return false;
+    if (!register_one_hotkey(hwnd, staging_id, vk, mods)) return false;
+    UnregisterHotKey(hwnd, active_id);
+    /* Active/staging IDs are now swapped logically — caller tracks which is which. */
+    return true;
+}
+
+/* ---- Compatibility-mode hook thread ---- */
+
+/* Per-binding fallback entry for the hook thread */
+typedef struct compat_binding_t {
+    int  vk;
+    UINT mods;
+    volatile LONG *signal;
+} compat_binding_t;
+
+static compat_binding_t g_compat_bindings[2];
+static int              g_compat_binding_count = 0;
+
+static LRESULT CALLBACK compat_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+        const KBDLLHOOKSTRUCT *kb = (const KBDLLHOOKSTRUCT *)lParam;
+
+        bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
+        bool alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
+        bool super = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
+                   || (GetAsyncKeyState(VK_RWIN)   & 0x8000) != 0;
+
+        UINT active = 0;
+        if (ctrl)  active |= MOD_CONTROL;
+        if (shift) active |= MOD_SHIFT;
+        if (alt)   active |= MOD_ALT;
+        if (super) active |= MOD_WIN;
+
+        for (int i = 0; i < g_compat_binding_count; i++) {
+            if ((UINT)kb->vkCode == (UINT)g_compat_bindings[i].vk
+                && active == g_compat_bindings[i].mods) {
+                InterlockedExchange(g_compat_bindings[i].signal, 1);
             }
         }
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+static DWORD WINAPI compat_hook_thread_proc(LPVOID) {
+    g_compat_hook = SetWindowsHookEx(WH_KEYBOARD_LL, compat_hook_proc,
+                                     GetModuleHandle(NULL), 0);
+    if (g_compat_hook == NULL) {
+        g_compat_hook_running = false;
+        return 1;
+    }
+
+    MSG msg;
+    while (g_compat_hook_running) {
+        /* GetMessage blocks the thread, zero CPU — only wakes on hook events. */
+        if (GetMessage(&msg, NULL, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    UnhookWindowsHookEx(g_compat_hook);
+    g_compat_hook = NULL;
+    return 0;
+}
+
+static void start_compat_hook_thread(void) {
+    if (g_compat_hook_thread != NULL) return;
+
+    /* Populate fallback bindings from config */
+    g_compat_binding_count = 0;
+    if (g_config.hotkey_toggle_vk != 0) {
+        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_toggle_vk;
+        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_toggle_mods;
+        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_toggle_passthrough;
+        g_compat_binding_count++;
+    }
+    if (g_config.hotkey_show_vk != 0) {
+        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_show_vk;
+        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_show_mods;
+        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_show_window;
+        g_compat_binding_count++;
+    }
+
+    g_compat_hook_running = true;
+    g_compat_hook_thread = CreateThread(NULL, 0, compat_hook_thread_proc, NULL, 0, NULL);
+}
+
+static void stop_compat_hook_thread(void) {
+    if (g_compat_hook_thread == NULL) return;
+    g_compat_hook_running = false;
+    PostThreadMessage(GetThreadId(g_compat_hook_thread), WM_NULL, 0, 0);
+    WaitForSingleObject(g_compat_hook_thread, 2000);
+    CloseHandle(g_compat_hook_thread);
+    g_compat_hook_thread = NULL;
+    g_compat_binding_count = 0;
 }
 
 /* ========================================================================
@@ -306,6 +439,11 @@ overlay_config_t overlay_config_default(void) {
     cfg.fps_idle         = 4;
     cfg.idle_fps_timeout = 5.0f;
     cfg.auto_detect_refresh = true;
+    cfg.hotkey_toggle_vk   = 'P';
+    cfg.hotkey_toggle_mods = MOD_CONTROL | MOD_SHIFT;
+    cfg.hotkey_show_vk     = 'H';
+    cfg.hotkey_show_mods   = MOD_CONTROL | MOD_SHIFT;
+    cfg.hotkey_compat_mode = false;
     return cfg;
 }
 
@@ -372,6 +510,11 @@ static void overlay_config_save(void) {
     fprintf(f, "fps_idle=%d\n", g_config.fps_idle);
     fprintf(f, "idle_fps_timeout=%.1f\n", (double)g_config.idle_fps_timeout);
     fprintf(f, "auto_detect_refresh=%d\n", g_config.auto_detect_refresh ? 1 : 0);
+    fprintf(f, "hotkey_toggle_vk=%d\n",   g_config.hotkey_toggle_vk);
+    fprintf(f, "hotkey_toggle_mods=%d\n",  g_config.hotkey_toggle_mods);
+    fprintf(f, "hotkey_show_vk=%d\n",     g_config.hotkey_show_vk);
+    fprintf(f, "hotkey_show_mods=%d\n",    g_config.hotkey_show_mods);
+    fprintf(f, "hotkey_compat_mode=%d\n",   g_config.hotkey_compat_mode ? 1 : 0);
     fclose(f);
 }
 
@@ -449,6 +592,11 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "fps_idle=%d", &ival) == 1) cfg->fps_idle = ival;
         else if (sscanf(line, "idle_fps_timeout=%f", &fval) == 1) cfg->idle_fps_timeout = fval;
         else if (sscanf(line, "auto_detect_refresh=%d", &ival) == 1) cfg->auto_detect_refresh = (ival != 0);
+        else if (sscanf(line, "hotkey_toggle_vk=%d", &ival) == 1)   cfg->hotkey_toggle_vk = ival;
+        else if (sscanf(line, "hotkey_toggle_mods=%d", &ival) == 1)  cfg->hotkey_toggle_mods = ival;
+        else if (sscanf(line, "hotkey_show_vk=%d", &ival) == 1)     cfg->hotkey_show_vk = ival;
+        else if (sscanf(line, "hotkey_show_mods=%d", &ival) == 1)    cfg->hotkey_show_mods = ival;
+        else if (sscanf(line, "hotkey_compat_mode=%d", &ival) == 1)  cfg->hotkey_compat_mode = (ival != 0);
     }
     fclose(f);
 }
@@ -498,6 +646,15 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.fps_idle           = cfg->fps_idle;
         g_config.idle_fps_timeout   = cfg->idle_fps_timeout;
         g_config.auto_detect_refresh = cfg->auto_detect_refresh;
+        if (cfg->hotkey_toggle_vk != 0 || cfg->hotkey_toggle_mods != 0) {
+            g_config.hotkey_toggle_vk   = cfg->hotkey_toggle_vk;
+            g_config.hotkey_toggle_mods = cfg->hotkey_toggle_mods;
+        }
+        if (cfg->hotkey_show_vk != 0 || cfg->hotkey_show_mods != 0) {
+            g_config.hotkey_show_vk     = cfg->hotkey_show_vk;
+            g_config.hotkey_show_mods   = cfg->hotkey_show_mods;
+        }
+        g_config.hotkey_compat_mode = cfg->hotkey_compat_mode;
     }
     detect_system_language();
 
@@ -606,9 +763,22 @@ int overlay_window_init(const overlay_config_t *cfg) {
     /* Apply config (passthrough, toolwindow, topmost) via native/glfw APIs safely */
     apply_config_to_window();
 
-    /* Install keyboard hook for global hotkeys */
-    g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, low_level_keyboard_proc,
-                                       GetModuleHandle(NULL), 0);
+    /* Register global hotkeys via RegisterHotKey (zero-latency, no hook overhead).
+     * Check for conflicts — if any hotkey fails and compatibility mode is off,
+     * set a flag to auto-popup the settings panel on the first frame. */
+    {
+        HWND hwnd = glfwGetWin32Window(g_window);
+        bool ok_toggle = register_one_hotkey(hwnd, HOTKEY_ID_TOGGLE,
+            g_config.hotkey_toggle_vk, g_config.hotkey_toggle_mods);
+        bool ok_show   = register_one_hotkey(hwnd, HOTKEY_ID_SHOW,
+            g_config.hotkey_show_vk, g_config.hotkey_show_mods);
+        if ((!ok_toggle || !ok_show) && !g_config.hotkey_compat_mode) {
+            g_hotkey_conflict_on_init = true;
+        }
+    }
+    if (g_config.hotkey_compat_mode) {
+        start_compat_hook_thread();
+    }
 
     g_first_frame = true;
 
@@ -666,6 +836,18 @@ static LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT msg, WPARAM wParam, 
         /* Always hide from taskbar */
         style->styleNew |= WS_EX_TOOLWINDOW;
         style->styleNew &= ~WS_EX_APPWINDOW;
+    }
+
+    /* Global hotkey (RegisterHotKey) */
+    if (msg == WM_HOTKEY) {
+        int id = (int)wParam;
+        if (id == HOTKEY_ID_TOGGLE) {
+            InterlockedExchange(&g_hotkey_toggle_passthrough, 1);
+            return 0;
+        } else if (id == HOTKEY_ID_SHOW) {
+            InterlockedExchange(&g_hotkey_show_window, 1);
+            return 0;
+        }
     }
 
     /* Display mode changed (resolution / refresh rate / monitor plugged).
@@ -1194,6 +1376,14 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.window_height = target_h;
             }
             g_first_frame = false;
+
+            /* Auto-popup settings on first launch if RegisterHotKey failed (conflict)
+             * and compatibility mode is not enabled. Only on the very first frame,
+             * never during gameplay. */
+            if (g_hotkey_conflict_on_init) {
+                g_hotkey_conflict_on_init = false;
+                g_settings_open = true;
+            }
         }
 
         ImGui::PopStyleColor(pushed_colors);
@@ -1295,6 +1485,179 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                 LOC("调试选项", "Debug options"));
             if (ImGui::Checkbox(LOC("每10秒输出帧率到日志", "Log FPS every 10s"), &g_config.debug_show_fps)) settings_changed = true;
+
+            ImGui::Separator();
+
+            /* ---- Global hotkeys ---- */
+            {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                    LOC("全局快捷键", "Global hotkeys"));
+
+                /* Format a Win32 VK + modifiers as a human-readable string using ImGui::GetKeyName */
+                auto format_hotkey = [](int vk, int mods) -> std::string {
+                    if (vk == 0) return LOC("未设置", "Unset");
+                    /* Map common VK codes to ImGuiKey for GetKeyName */
+                    ImGuiKey ikey = ImGuiKey_None;
+                    if (vk >= 'A' && vk <= 'Z') ikey = (ImGuiKey)(ImGuiKey_A + (vk - 'A'));
+                    else if (vk >= '0' && vk <= '9') ikey = (ImGuiKey)(ImGuiKey_0 + (vk - '0'));
+                    else if (vk >= VK_F1 && vk <= VK_F24) ikey = (ImGuiKey)(ImGuiKey_F1 + (vk - VK_F1));
+                    else switch (vk) {
+                        case VK_SPACE:   ikey = ImGuiKey_Space; break;
+                        case VK_RETURN:  ikey = ImGuiKey_Enter; break;
+                        case VK_TAB:     ikey = ImGuiKey_Tab; break;
+                        case VK_ESCAPE:  ikey = ImGuiKey_Escape; break;
+                        case VK_BACK:    ikey = ImGuiKey_Backspace; break;
+                        case VK_DELETE:  ikey = ImGuiKey_Delete; break;
+                        case VK_INSERT:  ikey = ImGuiKey_Insert; break;
+                        case VK_HOME:    ikey = ImGuiKey_Home; break;
+                        case VK_END:     ikey = ImGuiKey_End; break;
+                        case VK_PRIOR:   ikey = ImGuiKey_PageUp; break;
+                        case VK_NEXT:    ikey = ImGuiKey_PageDown; break;
+                        case VK_LEFT:    ikey = ImGuiKey_LeftArrow; break;
+                        case VK_RIGHT:   ikey = ImGuiKey_RightArrow; break;
+                        case VK_UP:      ikey = ImGuiKey_UpArrow; break;
+                        case VK_DOWN:    ikey = ImGuiKey_DownArrow; break;
+                        case VK_OEM_MINUS:    ikey = ImGuiKey_Minus; break;
+                        case VK_OEM_PERIOD:   ikey = ImGuiKey_Period; break;
+                        case VK_OEM_COMMA:    ikey = ImGuiKey_Comma; break;
+                        case VK_OEM_1:        ikey = ImGuiKey_Semicolon; break;
+                        case VK_OEM_2:        ikey = ImGuiKey_Slash; break;
+                        case VK_OEM_3:        ikey = ImGuiKey_GraveAccent; break;
+                        case VK_OEM_4:        ikey = ImGuiKey_LeftBracket; break;
+                        case VK_OEM_5:        ikey = ImGuiKey_Backslash; break;
+                        case VK_OEM_6:        ikey = ImGuiKey_RightBracket; break;
+                        case VK_OEM_7:        ikey = ImGuiKey_Apostrophe; break;
+                        default: break;
+                    }
+                    std::string s;
+                    if (mods & MOD_CONTROL) s += "Ctrl+";
+                    if (mods & MOD_SHIFT)   s += "Shift+";
+                    if (mods & MOD_ALT)     s += "Alt+";
+                    if (mods & MOD_WIN)     s += "Win+";
+                    const char *kn = ikey != ImGuiKey_None ? ImGui::GetKeyName(ikey) : nullptr;
+                    s += kn ? kn : std::to_string(vk);
+                    return s;
+                };
+
+                /* Static state for hotkey capture */
+                static int  g_hotkey_capture_target = 0; /* 0=none, 1=toggle, 2=show */
+                static bool g_hotkey_capture_active = false;
+
+                auto hotkey_button = [&](const char* label, const char* label_en,
+                                         int *pvk, int *pmods, int target_id) {
+                    ImGui::Text("%s", LOC(label, label_en));
+                    ImGui::SameLine(180.0f);
+                    std::string cap_text;
+                    if (g_hotkey_capture_active && g_hotkey_capture_target == target_id) {
+                        cap_text = LOC("请按键… (Esc取消)", "Press key… (Esc cancel)");
+                    } else {
+                        cap_text = format_hotkey(*pvk, *pmods);
+                    }
+                    if (ImGui::Button(cap_text.c_str(), ImVec2(200.0f, 0.0f))) {
+                        g_hotkey_capture_active = true;
+                        g_hotkey_capture_target = target_id;
+                    }
+
+                    if (g_hotkey_capture_active && g_hotkey_capture_target == target_id) {
+                        ImGuiIO& io_cap = ImGui::GetIO();
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                            g_hotkey_capture_active = false;
+                        } else {
+                            /* Poll all named keys for capture */
+                            for (int ki = ImGuiKey_NamedKey_BEGIN; ki < ImGuiKey_NamedKey_END; ki++) {
+                                ImGuiKey k = (ImGuiKey)ki;
+                                /* Skip modifiers */
+                                if (k == ImGuiKey_LeftCtrl || k == ImGuiKey_RightCtrl
+                                 || k == ImGuiKey_LeftShift || k == ImGuiKey_RightShift
+                                 || k == ImGuiKey_LeftAlt || k == ImGuiKey_RightAlt
+                                 || k == ImGuiKey_LeftSuper || k == ImGuiKey_RightSuper)
+                                    continue;
+                                if (ImGui::IsKeyPressed(k, false)) {
+                                    /* Map ImGuiKey back to VK */
+                                    int nvk = 0;
+                                    if (k >= ImGuiKey_A && k <= ImGuiKey_Z)
+                                        nvk = 'A' + (ki - ImGuiKey_A);
+                                    else if (k >= ImGuiKey_0 && k <= ImGuiKey_9)
+                                        nvk = '0' + (ki - ImGuiKey_0);
+                                    else if (k >= ImGuiKey_F1 && k <= ImGuiKey_F24)
+                                        nvk = VK_F1 + (ki - ImGuiKey_F1);
+                                    else switch (k) {
+                                        case ImGuiKey_Space:       nvk = VK_SPACE; break;
+                                        case ImGuiKey_Enter:       nvk = VK_RETURN; break;
+                                        case ImGuiKey_Tab:         nvk = VK_TAB; break;
+                                        case ImGuiKey_Backspace:   nvk = VK_BACK; break;
+                                        case ImGuiKey_Delete:      nvk = VK_DELETE; break;
+                                        case ImGuiKey_Insert:      nvk = VK_INSERT; break;
+                                        case ImGuiKey_Home:        nvk = VK_HOME; break;
+                                        case ImGuiKey_End:         nvk = VK_END; break;
+                                        case ImGuiKey_PageUp:      nvk = VK_PRIOR; break;
+                                        case ImGuiKey_PageDown:    nvk = VK_NEXT; break;
+                                        case ImGuiKey_LeftArrow:   nvk = VK_LEFT; break;
+                                        case ImGuiKey_RightArrow:  nvk = VK_RIGHT; break;
+                                        case ImGuiKey_UpArrow:     nvk = VK_UP; break;
+                                        case ImGuiKey_DownArrow:   nvk = VK_DOWN; break;
+                                        case ImGuiKey_Minus:       nvk = VK_OEM_MINUS; break;
+                                        case ImGuiKey_Period:      nvk = VK_OEM_PERIOD; break;
+                                        case ImGuiKey_Comma:       nvk = VK_OEM_COMMA; break;
+                                        case ImGuiKey_Semicolon:   nvk = VK_OEM_1; break;
+                                        case ImGuiKey_Slash:       nvk = VK_OEM_2; break;
+                                        case ImGuiKey_GraveAccent: nvk = VK_OEM_3; break;
+                                        case ImGuiKey_LeftBracket: nvk = VK_OEM_4; break;
+                                        case ImGuiKey_Backslash:   nvk = VK_OEM_5; break;
+                                        case ImGuiKey_RightBracket:nvk = VK_OEM_6; break;
+                                        case ImGuiKey_Apostrophe:  nvk = VK_OEM_7; break;
+                                        default: break;
+                                    }
+                                    if (nvk != 0) {
+                                        int nmods = 0;
+                                        if (io_cap.KeyCtrl)  nmods |= MOD_CONTROL;
+                                        if (io_cap.KeyShift) nmods |= MOD_SHIFT;
+                                        if (io_cap.KeyAlt)   nmods |= MOD_ALT;
+                                        if (io_cap.KeySuper) nmods |= MOD_WIN;
+                                        *pvk = nvk;
+                                        *pmods = nmods;
+                                        settings_changed = true;
+                                        g_hotkey_capture_active = false;
+
+                                        /* Re-register hotkeys on change */
+                                        unregister_all_hotkeys();
+                                        register_all_hotkeys();
+                                        /* If compat mode is off, clear conflict flag
+                                         * (new key may not conflict) */
+                                        g_hotkey_conflict_on_init = false;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                };
+
+                hotkey_button("切换穿透", "Toggle Passthrough",
+                    &g_config.hotkey_toggle_vk, &g_config.hotkey_toggle_mods, 1);
+                hotkey_button("显示窗口", "Show Window",
+                    &g_config.hotkey_show_vk, &g_config.hotkey_show_mods, 2);
+
+                /* Compatibility mode checkbox */
+                if (ImGui::Checkbox(LOC("兼容模式 (Hook 回退)", "Compatibility mode (Hook fallback)"),
+                                    &g_config.hotkey_compat_mode)) {
+                    settings_changed = true;
+                    if (g_config.hotkey_compat_mode) {
+                        start_compat_hook_thread();
+                    } else {
+                        stop_compat_hook_thread();
+                    }
+                }
+                if (g_config.hotkey_compat_mode) {
+                    ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.15f, 1.0f),
+                        LOC("兼容模式使用键盘 Hook 检测快捷键，可能与其他程序同时触发。",
+                            "Compat mode uses a keyboard hook — may trigger simultaneously with other apps."));
+                } else {
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                        LOC("使用 RegisterHotKey 注册快捷键 — 零延迟，无性能影响。如快捷键被其他程序占用，请更换组合键。",
+                            "Hotkeys registered via RegisterHotKey — zero latency, no performance impact. Change key combination if occupied."));
+                }
+            }
 
             ImGui::Separator();
 
@@ -1441,6 +1804,15 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.fps_idle           = def.fps_idle;
                 g_config.idle_fps_timeout   = def.idle_fps_timeout;
                 g_config.auto_detect_refresh = def.auto_detect_refresh;
+                g_config.hotkey_toggle_vk   = def.hotkey_toggle_vk;
+                g_config.hotkey_toggle_mods = def.hotkey_toggle_mods;
+                g_config.hotkey_show_vk     = def.hotkey_show_vk;
+                g_config.hotkey_show_mods   = def.hotkey_show_mods;
+                g_config.hotkey_compat_mode = def.hotkey_compat_mode;
+                /* Re-register all hotkeys with defaults */
+                unregister_all_hotkeys();
+                stop_compat_hook_thread();
+                register_all_hotkeys();
                 /* Re-detect when resetting all settings */
                 overlay_apply_auto_refresh();
                 g_config.window_x = def.window_x;
@@ -1647,10 +2019,9 @@ void overlay_window_shutdown(void) {
     }
     cleanup_time_period();
 
-    if (g_keyboard_hook != NULL) {
-        UnhookWindowsHookEx(g_keyboard_hook);
-        g_keyboard_hook = NULL;
-    }
+    /* Stop compat-mode hook thread before unregistering hotkeys */
+    stop_compat_hook_thread();
+    unregister_all_hotkeys();
 
     if (g_window != NULL) {
         if (g_prev_wndproc != NULL) {

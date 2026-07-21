@@ -47,6 +47,13 @@ typedef struct {
     int   fps_idle;               /* target FPS after idle timeout with no user interaction (15-400) */
     float idle_fps_timeout;       /* seconds of no mouse activity before dropping to fps_idle */
     bool  auto_detect_refresh;    /* auto-detect monitor refresh rate for clickable/settings FPS */
+
+    /* ---- Global hotkeys (saved as Win32 VK + modifiers) ---- */
+    int   hotkey_toggle_vk;       /* Win32 virtual-key code for toggle passthrough (0 = unset) */
+    int   hotkey_toggle_mods;     /* MOD_CONTROL / MOD_SHIFT / MOD_ALT / MOD_WIN */
+    int   hotkey_show_vk;         /* Win32 virtual-key code for show window (0 = unset) */
+    int   hotkey_show_mods;       /* MOD_CONTROL / MOD_SHIFT / MOD_ALT / MOD_WIN */
+    bool  hotkey_compat_mode;     /* enable WH_KEYBOARD_LL fallback for conflicted hotkeys */
 } overlay_config_t;
 
 /* Get default configuration */
