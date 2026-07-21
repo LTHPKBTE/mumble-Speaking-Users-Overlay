@@ -40,6 +40,8 @@ typedef struct {
     bool  show_current_channel_only; /* only show users in the same channel as local user */
     bool  mumble_logging_enabled; /* whether to print log messages via MumbleAPI */
     bool  debug_show_fps;         /* print FPS to Mumble log every 10 seconds (debug) */
+    bool  custom_fps_enabled;     /* disable vsync and use fixed framerate */
+    int   custom_fps_value;       /* target FPS when custom_fps_enabled (15-400) */
 } overlay_config_t;
 
 /* Get default configuration */

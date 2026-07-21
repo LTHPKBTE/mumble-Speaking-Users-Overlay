@@ -15,6 +15,7 @@
  */
 
 #include <GLFW/glfw3.h>
+#include <cstdio>
 #include <unordered_map>
 
 namespace {
@@ -41,6 +42,12 @@ struct AttribKeyHash {
  */
 std::unordered_map<AttribKey, int, AttribKeyHash> g_cache;
 
+/* Verification: count deduplicated calls, log once after warm-up. */
+long long g_skipped_count   = 0;
+long long g_passed_count    = 0;
+double    g_last_verify_time = 0.0;
+bool      g_verify_done      = false;
+
 } // anonymous namespace
 
 void OverlayGlfwSetWindowAttrib(GLFWwindow *window, int attrib, int value)
@@ -51,10 +58,19 @@ void OverlayGlfwSetWindowAttrib(GLFWwindow *window, int attrib, int value)
         const AttribKey key{window, attrib};
         const auto it = g_cache.find(key);
         if (it != g_cache.end() && it->second == value) {
+            g_skipped_count++;
+            /* Log verification once after a few seconds of runtime */
+            if (!g_verify_done && g_skipped_count > 500) {
+                g_verify_done = true;
+                fprintf(stderr, "[wrapper] dedup active: %lld calls skipped (%.1f%% saved)\n",
+                        g_skipped_count,
+                        100.0 * (double)g_skipped_count / (double)(g_skipped_count + g_passed_count));
+            }
             return; // unchanged — skip the expensive platform syscall
         }
         g_cache[key] = value;
     }
 
+    g_passed_count++;
     ::glfwSetWindowAttrib(window, attrib, value);
 }
