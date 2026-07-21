@@ -110,6 +110,18 @@ All configurable settings are saved to disk immediately when changed in the Sett
 Saved config location:
 - Windows: `%APPDATA%\Mumble\Mumble\SpeakingOverlay.cfg`
 
+### If the Overlay Appears Opaque (NVIDIA GPUs)
+
+On some NVIDIA GPU configurations, the overlay window may render as a solid/opaque rectangle instead of a transparent overlay. If this occurs, try the following steps:
+
+1. Open **NVIDIA Control Panel**.
+2. Go to **Manage 3D settings**.
+3. Open the **Program Settings** tab.
+4. Select the executable of the host application (Mumble.exe).
+5. Find **Vulkan/OpenGL present method**.
+6. Set it to **Prefer native**.
+7. Fully exit and relaunch the application.
+
 ## Prebuilt Binary
 
 Prebuilt binaries are available from the [**Releases**](https://github.com/LTHPKBTE/mumble-overlay-plugin/releases) page. Download `plugin.dll` from the latest release and follow the [installation instructions](#4-install-to-mumble) below.

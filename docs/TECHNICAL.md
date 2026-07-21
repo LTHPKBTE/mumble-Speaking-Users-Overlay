@@ -85,13 +85,13 @@ When the overlay is hidden (user clicked X), the render loop calls `glfwWaitEven
 
 ### Overview
 
-Two global hotkeys (Toggle Passthrough and Show Window) are configurable in the Settings panel. The primary mechanism is `RegisterHotKey` with `MOD_NOREPEAT`, delivering `WM_HOTKEY` directly to the window procedure. This replaces the previous `WH_KEYBOARD_LL` hook on the render thread, which caused system-wide input lag at low FPS.
+Two global hotkeys (Toggle Passthrough and Show Window) are configurable in the Settings panel. The primary mechanism is `RegisterHotKey` with `MOD_NOREPEAT`, delivering `WM_HOTKEY` directly to the window procedure. This replaces the previous `WH_KEYBOARD_LL` hook on the render thread, which could cause system-wide input lag at low FPS on some configurations.
 
-### Why WH_KEYBOARD_LL Was Problematic
+### WH_KEYBOARD_LL Limitations
 
-The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep (e.g., idle FPS = 4, meaning 250 ms sleeps), the hook chain was blocked — `CallNextHookEx` couldn't execute until the render thread woke up. This caused noticeable input lag for *all* applications in the system.
+The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep (e.g., idle FPS = 4, meaning 250 ms sleeps), the hook chain could be blocked — `CallNextHookEx` might not execute until the render thread woke up. On affected systems, this could cause noticeable input lag for other applications.
 
-`RegisterHotKey` avoids this entirely: the kernel delivers `WM_HOTKEY` asynchronously via the message queue. Zero latency, zero impact on other hook chains, and no dependency on the render thread being awake.
+`RegisterHotKey` mitigates this: the kernel delivers `WM_HOTKEY` asynchronously via the message queue, with effectively no measurable latency on typical systems and no dependency on the render thread being awake.
 
 ### Implementation
 
@@ -222,7 +222,7 @@ atexit(cleanup_time_period);
 
 ### Why Not Sleep()
 
-`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and increases power consumption. The waitable timer approach avoids this entirely on modern Windows.
+`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and increases power consumption. The waitable timer approach mitigates this on modern Windows (10 1803+).
 
 ---
 
@@ -237,7 +237,7 @@ Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The lim
 
 ## glfwSetWindowAttrib Wrapper
 
-The GLFW upstream function `_glfwSetWindowMousePassthroughWin32` calls expensive Win32 API functions (`SetWindowLongPtr`, `SetWindowPos`, `SetLayeredWindowAttributes`) every frame, even when the attribute hasn't changed. This was costing ~70 µs per frame at 144 Hz (wasted work, though not the dominant CPU consumer — the GPU driver vsync busy-wait was).
+The GLFW upstream function `_glfwSetWindowMousePassthroughWin32` calls expensive Win32 API functions (`SetWindowLongPtr`, `SetWindowPos`, `SetLayeredWindowAttributes`) every frame, even when the attribute hasn't changed. This was costing ~70 µs per frame at 144 Hz (redundant work on these specific systems, though not the dominant CPU consumer — the GPU driver vsync busy-wait was the larger factor).
 
 ### Solution
 

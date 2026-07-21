@@ -108,6 +108,18 @@
 配置文件位置：
 - Windows: `%APPDATA%\Mumble\Mumble\SpeakingOverlay.cfg`
 
+### 覆盖层显示为不透明时怎么办（NVIDIA 显卡）
+
+在某些 NVIDIA 显卡配置下，覆盖窗口可能显示为实色矩形而非透明叠加层。如遇到此情况，可尝试以下步骤：
+
+1. 打开 **NVIDIA 控制面板**。
+2. 进入 **管理 3D 设置**。
+3. 打开 **程序设置** 选项卡。
+4. 选择目标程序的可执行文件（Mumble.exe）。
+5. 找到 **Vulkan/OpenGL 呈现方法**。
+6. 将其设置为 **优先本机**。
+7. 完全退出并重新启动程序。
+
 ## 预构建二进制文件
 
 预构建文件可从 [**Releases**](https://github.com/LTHPKBTE/mumble-overlay-plugin/releases) 页面下载。从最新版本中下载 `plugin.dll`，按照下面的[安装教程](#4-安装到-mumble)操作即可。
