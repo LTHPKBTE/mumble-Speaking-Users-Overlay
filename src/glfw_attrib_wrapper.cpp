@@ -15,7 +15,6 @@
  */
 
 #include <GLFW/glfw3.h>
-#include <cstdio>
 #include <unordered_map>
 
 namespace {
@@ -36,41 +35,31 @@ struct AttribKeyHash {
     }
 };
 
-/*
- * Cache of last-known value per (window, attrib).
- * All callers run on the render thread → no mutex needed.
- */
 std::unordered_map<AttribKey, int, AttribKeyHash> g_cache;
 
-/* Verification: count deduplicated calls, log once after warm-up. */
-long long g_skipped_count   = 0;
-long long g_passed_count    = 0;
-double    g_last_verify_time = 0.0;
-bool      g_verify_done      = false;
+long long g_skipped = 0;
+long long g_passed  = 0;
 
 } // anonymous namespace
 
+bool OverlayGlfwAttribGetStats(long long *out_skipped, long long *out_passed) {
+    if (out_skipped) *out_skipped = g_skipped;
+    if (out_passed)  *out_passed  = g_passed;
+    return (g_skipped + g_passed) > 0;
+}
+
 void OverlayGlfwSetWindowAttrib(GLFWwindow *window, int attrib, int value)
 {
-    /* Only deduplicate attributes that are known to be called redundantly
-     * every frame.  Everything else passes through unchanged. */
     if (attrib == GLFW_MOUSE_PASSTHROUGH || attrib == GLFW_FLOATING) {
         const AttribKey key{window, attrib};
         const auto it = g_cache.find(key);
         if (it != g_cache.end() && it->second == value) {
-            g_skipped_count++;
-            /* Log verification once after a few seconds of runtime */
-            if (!g_verify_done && g_skipped_count > 500) {
-                g_verify_done = true;
-                fprintf(stderr, "[wrapper] dedup active: %lld calls skipped (%.1f%% saved)\n",
-                        g_skipped_count,
-                        100.0 * (double)g_skipped_count / (double)(g_skipped_count + g_passed_count));
-            }
-            return; // unchanged — skip the expensive platform syscall
+            g_skipped++;
+            return;
         }
         g_cache[key] = value;
     }
 
-    g_passed_count++;
+    g_passed++;
     ::glfwSetWindowAttrib(window, attrib, value);
 }

@@ -40,8 +40,12 @@ typedef struct {
     bool  show_current_channel_only; /* only show users in the same channel as local user */
     bool  mumble_logging_enabled; /* whether to print log messages via MumbleAPI */
     bool  debug_show_fps;         /* print FPS to Mumble log every 10 seconds (debug) */
-    bool  custom_fps_enabled;     /* disable vsync and use fixed framerate */
-    int   custom_fps_value;       /* target FPS when custom_fps_enabled (15-400) */
+    bool  vsync_enabled;          /* use vsync for frame pacing (off by default, warns about driver busy-wait) */
+    int   fps_passthrough;        /* target FPS when mouse passthrough is active (15-400) */
+    int   fps_clickable;          /* target FPS when window is clickable (15-400) */
+    int   fps_settings_open;      /* target FPS when settings panel is open (15-400, highest priority) */
+    int   fps_idle;               /* target FPS after idle timeout with no user interaction (15-400) */
+    float idle_fps_timeout;       /* seconds of no mouse activity before dropping to fps_idle */
 } overlay_config_t;
 
 /* Get default configuration */

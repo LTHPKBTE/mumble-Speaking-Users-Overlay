@@ -21,12 +21,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
+
 #include <windows.h>
+#include <mmsystem.h>    /* timeBeginPeriod / timeEndPeriod for fallback timer */
+#pragma comment(lib, "winmm.lib")
+
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
 /* ---- Overlay internal header ---- */
 #include "overlay_window.h"
+
+/* Forward-declare wrapper stats (don't include glfw_attrib_wrapper.h — its macro
+ * would redirect glfwSetWindowAttrib in apply_config_to_window()). */
+bool OverlayGlfwAttribGetStats(long long *out_skipped, long long *out_passed);
 
 /* ========================================================================
  * Log callback — set by plugin.c to forward messages to Mumble
@@ -102,32 +111,32 @@ static int     g_last_content_h = 0;
 /* ---- Debug FPS periodic logging ---- */
 static double  g_last_fps_log_time = 0.0;
 
-/* ---- Per-frame profiling (debug_show_fps must be on) ---- */
+/* ---- Per-frame profiling (always active, only logged when debug_show_fps is on) ---- */
 #define PROF_SAMPLES 5
 static LARGE_INTEGER g_prof_freq;
-static LARGE_INTEGER g_prof_t0;          /* frame start           */
+static LARGE_INTEGER g_prof_t0;
 static LARGE_INTEGER g_prof_t1[PROF_SAMPLES];
-static const char    *g_prof_label[PROF_SAMPLES];
 static int           g_prof_idx = 0;
-static void prof_tick(const char *label) {
+static void prof_tick(void) {
     if (g_prof_idx < PROF_SAMPLES) {
-        g_prof_label[g_prof_idx] = label;
         QueryPerformanceCounter(&g_prof_t1[g_prof_idx]);
         g_prof_idx++;
     }
 }
-#define PROF_BEGIN() do { \
-    if (g_config.debug_show_fps) { g_prof_idx = 0; QueryPerformanceCounter(&g_prof_t0); } \
-} while(0)
-#define PROF_TICK(label) do { \
-    if (g_config.debug_show_fps) prof_tick(label); \
-} while(0)
+/* Always reset at frame start — QPC is ~20 ns, negligible overhead. */
+#define PROF_BEGIN() do { g_prof_idx = 0; QueryPerformanceCounter(&g_prof_t0); } while(0)
+#define PROF_TICK() prof_tick()
 
-/* ---- Custom framerate limiter ---- */
-static double  g_frame_target_interval = 0.0;  /* 1.0 / fps, 0 = vsync */
-static double  g_last_frame_time      = 0.0;
+/* ---- High-resolution waitable timer (replaces Sleep + timeBeginPeriod) ---- */
+static HANDLE  g_frame_timer = NULL;
+static bool    g_using_time_period = false;  /* true if fallback timer needed timeBeginPeriod */
 
-/* ---- Global keyboard hook ---- */
+/* ---- Current effective target interval (determined each frame from priority rules) ---- */
+static double  g_frame_target_interval = 0.0;
+static double  g_last_frame_time       = 0.0;
+
+/* ---- Idle detection for fps_idle ---- */
+static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse move/click/scroll */
 static HHOOK  g_keyboard_hook     = NULL;
 static WNDPROC g_prev_wndproc       = NULL;
 /* Thread-safe flags set by the keyboard hook, read by render thread */
@@ -232,8 +241,12 @@ overlay_config_t overlay_config_default(void) {
     cfg.show_current_channel_only = false;
     cfg.mumble_logging_enabled = true;
     cfg.debug_show_fps = false;
-    cfg.custom_fps_enabled = false;
-    cfg.custom_fps_value   = 60;
+    cfg.vsync_enabled    = false;
+    cfg.fps_passthrough  = 15;
+    cfg.fps_clickable    = 60;
+    cfg.fps_settings_open = 60;
+    cfg.fps_idle         = 4;
+    cfg.idle_fps_timeout = 5.0f;
     return cfg;
 }
 
@@ -293,8 +306,12 @@ static void overlay_config_save(void) {
     fprintf(f, "show_current_channel_only=%d\n", g_config.show_current_channel_only ? 1 : 0);
     fprintf(f, "mumble_logging_enabled=%d\n", g_config.mumble_logging_enabled ? 1 : 0);
     fprintf(f, "debug_show_fps=%d\n", g_config.debug_show_fps ? 1 : 0);
-    fprintf(f, "custom_fps_enabled=%d\n", g_config.custom_fps_enabled ? 1 : 0);
-    fprintf(f, "custom_fps_value=%d\n", g_config.custom_fps_value);
+    fprintf(f, "vsync_enabled=%d\n", g_config.vsync_enabled ? 1 : 0);
+    fprintf(f, "fps_passthrough=%d\n", g_config.fps_passthrough);
+    fprintf(f, "fps_clickable=%d\n", g_config.fps_clickable);
+    fprintf(f, "fps_settings_open=%d\n", g_config.fps_settings_open);
+    fprintf(f, "fps_idle=%d\n", g_config.fps_idle);
+    fprintf(f, "idle_fps_timeout=%.1f\n", (double)g_config.idle_fps_timeout);
     fclose(f);
 }
 
@@ -345,8 +362,32 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "dangerous_alpha_allowed=%d", &ival) == 1) cfg->dangerous_alpha_allowed = (ival != 0);
         else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
         else if (sscanf(line, "debug_show_fps=%d", &ival) == 1) cfg->debug_show_fps = (ival != 0);
-        else if (sscanf(line, "custom_fps_enabled=%d", &ival) == 1) cfg->custom_fps_enabled = (ival != 0);
-        else if (sscanf(line, "custom_fps_value=%d", &ival) == 1) cfg->custom_fps_value = ival;
+        else if (sscanf(line, "custom_fps_enabled=%d", &ival) == 1) {
+            /* backward compat: old flag → modern split config */
+            if (ival != 0) {
+                /* Old: custom framerate ON (= vsync off + limit FPS) */
+                cfg->vsync_enabled = false;
+                cfg->fps_passthrough  = 15;
+                cfg->fps_clickable    = 60;
+                cfg->fps_settings_open = 60;
+                cfg->fps_idle         = 4;
+                cfg->idle_fps_timeout = 5.0f;
+            } else {
+                /* Old: custom framerate OFF (= vsync on) */
+                cfg->vsync_enabled = true;
+            }
+        }
+        else if (sscanf(line, "custom_fps_value=%d", &ival) == 1) {
+            /* backward compat: apply old single-value setting to modern split config */
+            cfg->fps_clickable    = ival;
+            cfg->fps_settings_open = ival;
+        }
+        else if (sscanf(line, "vsync_enabled=%d", &ival) == 1) cfg->vsync_enabled = (ival != 0);
+        else if (sscanf(line, "fps_passthrough=%d", &ival) == 1) cfg->fps_passthrough = ival;
+        else if (sscanf(line, "fps_clickable=%d", &ival) == 1) cfg->fps_clickable = ival;
+        else if (sscanf(line, "fps_settings_open=%d", &ival) == 1) cfg->fps_settings_open = ival;
+        else if (sscanf(line, "fps_idle=%d", &ival) == 1) cfg->fps_idle = ival;
+        else if (sscanf(line, "idle_fps_timeout=%f", &fval) == 1) cfg->idle_fps_timeout = fval;
     }
     fclose(f);
 }
@@ -389,8 +430,12 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.dangerous_alpha_allowed = cfg->dangerous_alpha_allowed;
         g_config.idle_timeout_seconds = cfg->idle_timeout_seconds;
         g_config.mumble_logging_enabled = cfg->mumble_logging_enabled;
-        g_config.custom_fps_enabled  = cfg->custom_fps_enabled;
-        g_config.custom_fps_value    = cfg->custom_fps_value;
+        g_config.vsync_enabled      = cfg->vsync_enabled;
+        g_config.fps_passthrough    = cfg->fps_passthrough;
+        g_config.fps_clickable      = cfg->fps_clickable;
+        g_config.fps_settings_open  = cfg->fps_settings_open;
+        g_config.fps_idle           = cfg->fps_idle;
+        g_config.idle_fps_timeout   = cfg->idle_fps_timeout;
     }
     detect_system_language();
 
@@ -429,12 +474,28 @@ int overlay_window_init(const overlay_config_t *cfg) {
     }
 
     glfwMakeContextCurrent(g_window);
-    if (g_config.custom_fps_enabled) {
-        glfwSwapInterval(0);  /* disable vsync */
-        g_frame_target_interval = 1.0 / (double)g_config.custom_fps_value;
-    } else {
+    if (g_config.vsync_enabled) {
         glfwSwapInterval(1);
-        g_frame_target_interval = 0.0;  /* vsync governs */
+        g_frame_target_interval = 0.0;
+    } else {
+        glfwSwapInterval(0);
+        g_frame_target_interval = 1.0 / (double)g_config.fps_passthrough;
+    }
+
+    /* Create high-resolution waitable timer (Win10 1803+, no global side effects). */
+    g_frame_timer = CreateWaitableTimerExW(NULL, NULL,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        TIMER_ALL_ACCESS);
+    /* Fallback to regular waitable timer on older Windows (< 1803).
+     * Regular waitable timers use the system default resolution (~15.6 ms),
+     * so we need timeBeginPeriod(1) for acceptable frame pacing. */
+    if (g_frame_timer == NULL) {
+        g_frame_timer = CreateWaitableTimer(NULL, TRUE, NULL);
+        if (g_frame_timer != NULL) {
+            timeBeginPeriod(1);
+            g_using_time_period = true;
+            atexit(cleanup_time_period);  /* ensure timeEndPeriod even on abnormal exit */
+        }
     }
 
     /* --- Dear ImGui --- */
@@ -483,11 +544,6 @@ int overlay_window_init(const overlay_config_t *cfg) {
     /* Install keyboard hook for global hotkeys */
     g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, low_level_keyboard_proc,
                                        GetModuleHandle(NULL), 0);
-
-    /* Request 1 ms timer resolution so Sleep(1) actually waits ~1 ms
-     * instead of the default ~15.6 ms.  Critical for the frame limiter.
-     * Called ONCE here, not per-frame. */
-    timeBeginPeriod(1);
 
     g_first_frame = true;
 
@@ -567,16 +623,19 @@ static void apply_config_to_window(void) {
     glfwSetWindowAttrib(g_window, GLFW_FLOATING,
         g_config.always_on_top ? GLFW_TRUE : GLFW_FALSE);
 
-    /* Apply custom framerate / vsync setting */
-    if (g_config.custom_fps_enabled) {
-        int fps = g_config.custom_fps_value;
-        if (fps < 15) fps = 15;
-        if (fps > 400) fps = 400;
-        glfwSwapInterval(0);
-        g_frame_target_interval = 1.0 / (double)fps;
-    } else {
+    /* Apply vsync / framerate limiter.
+     * Vsync is off by default (NVIDIA/AMD drivers busy-wait on vsync, burning CPU).
+     * Framerate is controlled via a high-resolution waitable timer per-frame. */
+    if (g_config.vsync_enabled) {
         glfwSwapInterval(1);
         g_frame_target_interval = 0.0;
+    } else {
+        glfwSwapInterval(0);
+        /* Start with passthrough FPS — real FPS is recalculated each frame by priority rules. */
+        int fps = g_config.fps_passthrough;
+        if (fps < 1) fps = 15;
+        if (fps > 400) fps = 400;
+        g_frame_target_interval = 1.0 / (double)fps;
     }
 
     /* Let GLFW track the native mouse-passthrough state (GLFW 3.3.2+) */
@@ -638,7 +697,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
      * Skipping frames would stop ImGui input and detached settings viewports from being pumped. */
     PROF_BEGIN();
     glfwPollEvents();
-    PROF_TICK("poll");
+    PROF_TICK();
 
     ImGuiIO& io = ImGui::GetIO();
     if (g_config.mouse_passthrough && !io.WantCaptureMouse) {
@@ -650,7 +709,16 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    PROF_TICK("newfrm");
+    PROF_TICK();
+
+    /* ---- Idle detection: track last user input for fps_idle ---- */
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseMoved || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
+            || io.WantCaptureMouse) {
+            g_last_user_input_time = ImGui::GetTime();
+        }
+    }
 
     /* ---- Process global keyboard shortcuts ---- */
     if (InterlockedCompareExchange(&g_hotkey_toggle_passthrough, 0, 1) == 1) {
@@ -695,7 +763,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     char     names[64][128];
     int      states[64];
     int user_count = poll ? poll(userdata, user_ids, names, states, 64) : 0;
-    PROF_TICK("speakr");
+    PROF_TICK();
 
     {
         double now = ImGui::GetTime();
@@ -1150,28 +1218,67 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 
             ImGui::Separator();
 
-            /* ---- Custom framerate ---- */
+            /* ---- Framerate control (multi-profile, no vsync by default) ---- */
             {
                 ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                     LOC("帧率控制", "Framerate control"));
-                if (ImGui::Checkbox(LOC("限制帧率", "Limit framerate"), &g_config.custom_fps_enabled)) settings_changed = true;
-                if (g_config.custom_fps_enabled) {
+
+                /* Vsync toggle */
+                if (ImGui::Checkbox(LOC("垂直同步", "VSync"), &g_config.vsync_enabled)) settings_changed = true;
+                if (g_config.vsync_enabled) {
                     ImGui::SameLine();
-                    ImGui::PushItemWidth(80.0f);
-                    if (ImGui::InputInt("##fps_value", &g_config.custom_fps_value, 0, 0, ImGuiInputTextFlags_None)) {
-                        if (g_config.custom_fps_value < 15) g_config.custom_fps_value = 15;
-                        if (g_config.custom_fps_value > 400) g_config.custom_fps_value = 400;
+                    ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
+                        LOC("⚠ 部分显卡驱动会在等待VSync时空转，导致高CPU占用",
+                            "⚠ Some GPU drivers busy-wait on VSync, causing high CPU"));
+                }
+
+                ImGui::Separator();
+
+                /* Helper: FPS input with +/-1 buttons and 15/30/60 presets */
+                auto fps_input = [&](const char* label, const char* label_en, int* fps) {
+                    ImGui::Text("%s", LOC(label, label_en));
+                    ImGui::SameLine(180.0f);
+                    ImGui::PushItemWidth(60.0f);
+                    if (ImGui::InputInt((std::string("##fps_") + label_en).c_str(), fps, 0, 0, ImGuiInputTextFlags_None)) {
+                        if (*fps < 15) *fps = 15;
+                        if (*fps > 400) *fps = 400;
                         settings_changed = true;
                     }
                     ImGui::PopItemWidth();
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("15"))  { g_config.custom_fps_value = 15;  settings_changed = true; }
+                    if (ImGui::SmallButton((std::string("15##") + label_en).c_str())) { *fps = 15;  settings_changed = true; }
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("30"))  { g_config.custom_fps_value = 30;  settings_changed = true; }
+                    if (ImGui::SmallButton((std::string("30##") + label_en).c_str())) { *fps = 30;  settings_changed = true; }
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("60"))  { g_config.custom_fps_value = 60;  settings_changed = true; }
+                    if (ImGui::SmallButton((std::string("60##") + label_en).c_str())) { *fps = 60;  settings_changed = true; }
+                };
+
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                    LOC("优先级: 设置面板 > 可点击 > 无活动 > 穿透。范围 15-400。",
+                        "Priority: Settings panel > Clickable > Idle > Passthrough. Range 15-400."));
+
+                if (!g_config.vsync_enabled) {
+                    fps_input("点击穿透时 FPS", "Passthrough FPS", &g_config.fps_passthrough);
+                    fps_input("可点击时 FPS", "Clickable FPS", &g_config.fps_clickable);
+                    fps_input("打开设置时 FPS", "Settings FPS", &g_config.fps_settings_open);
+                    fps_input("无活动时 FPS", "Idle FPS", &g_config.fps_idle);
+
+                    ImGui::Text(LOC("无活动超时(秒)", "Idle timeout (s)"));
+                    ImGui::SameLine(180.0f);
+                    ImGui::PushItemWidth(100.0f);
+                    if (ImGui::SliderFloat("##idle_timeout", &g_config.idle_fps_timeout, 1.0f, 120.0f, "%.0f")) {
+                        if (g_config.idle_fps_timeout < 1.0f) g_config.idle_fps_timeout = 1.0f;
+                        if (g_config.idle_fps_timeout > 120.0f) g_config.idle_fps_timeout = 120.0f;
+                        settings_changed = true;
+                    }
+                    ImGui::PopItemWidth();
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("范围 15-400，输入后回车确认。", "Range 15-400. Press Enter to confirm."));
+                        LOC("无鼠标活动超过此时间后降至无活动帧率",
+                            "Drop to idle FPS after no mouse activity for this duration"));
+                } else {
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                        LOC("垂直同步启用时，上述帧率设置无效。",
+                            "When VSync is enabled, the FPS settings above have no effect."));
                 }
             }
 
@@ -1221,8 +1328,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.idle_timeout_seconds = def.idle_timeout_seconds;
                 g_config.show_current_channel_only = def.show_current_channel_only;
                 g_config.mumble_logging_enabled = def.mumble_logging_enabled;
-                g_config.custom_fps_enabled  = def.custom_fps_enabled;
-                g_config.custom_fps_value    = def.custom_fps_value;
+                g_config.vsync_enabled      = def.vsync_enabled;
+                g_config.fps_passthrough    = def.fps_passthrough;
+                g_config.fps_clickable      = def.fps_clickable;
+                g_config.fps_settings_open  = def.fps_settings_open;
+                g_config.fps_idle           = def.fps_idle;
+                g_config.idle_fps_timeout   = def.idle_fps_timeout;
                 g_config.window_x = def.window_x;
                 g_config.window_y = def.window_y;
                 g_config.window_width = def.window_width;
@@ -1330,7 +1441,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     }
 
     glfwSwapBuffers(g_window);
-    PROF_TICK("swap");
+    PROF_TICK();
 
     /* ---- Debug: periodic FPS + per-stage profiling (after full frame) ---- */
     if (g_config.debug_show_fps) {
@@ -1345,24 +1456,58 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                            * 1000000.0 / (double)g_prof_freq.QuadPart;
                     prev = &g_prof_t1[pi];
                 }
-                OW_LOGF("FPS: %.1f  [poll:%.0fus newfrm:%.0fus keys+speak:%.0fus ui+rendr+swap:%.0fus]",
+                long long wrp_skip = 0, wrp_pass = 0;
+                OverlayGlfwAttribGetStats(&wrp_skip, &wrp_pass);
+                long long wrp_total = wrp_skip + wrp_pass;
+                int wrp_pct = wrp_total > 0 ? (int)(100LL * wrp_skip / wrp_total) : 0;
+                OW_LOGF("FPS: %.1f (tgt:%d)  [poll:%.0fus newfrm:%.0fus keys+speak:%.0fus ui+rendr+swap:%.0fus]  wrapper: %lld/%lld saved (%d%%)",
                         (double)ImGui::GetIO().Framerate,
-                        us[0], us[1], us[2], us[3]);
+                        g_frame_target_interval > 0.0 ? (int)(1.0 / g_frame_target_interval) : 0,
+                        us[0], us[1], us[2], us[3],
+                        wrp_skip, wrp_total, wrp_pct);
             }
         }
     }
 
-    /* ---- Custom framerate limiter (no busy-wait) ---- */
+    /* ---- Recalculate target FPS based on priority rules ---- */
+    if (!g_config.vsync_enabled && !g_window_hidden) {
+        int target_fps;
+        if (g_settings_open) {
+            /* Highest priority: settings panel is open */
+            target_fps = g_config.fps_settings_open;
+        } else if (!g_config.mouse_passthrough) {
+            /* Window is clickable (not in passthrough mode) */
+            target_fps = g_config.fps_clickable;
+            /* Reset idle timer when window is clickable — user may interact */
+            g_last_user_input_time = ImGui::GetTime();
+        } else {
+            /* Passthrough mode: check for idle timeout */
+            double idle_elapsed = ImGui::GetTime() - g_last_user_input_time;
+            if (g_config.idle_fps_timeout > 0.0f && idle_elapsed > (double)g_config.idle_fps_timeout) {
+                target_fps = g_config.fps_idle;
+            } else {
+                target_fps = g_config.fps_passthrough;
+            }
+        }
+        if (target_fps < 1) target_fps = 1;
+        if (target_fps > 400) target_fps = 400;
+        g_frame_target_interval = 1.0 / (double)target_fps;
+    }
+
+    /* ---- High-resolution waitable timer (replaces Sleep + timeBeginPeriod) ---- */
     if (g_frame_target_interval > 0.0) {
         double now = glfwGetTime();
         if (g_last_frame_time > 0.0) {
             double elapsed = now - g_last_frame_time;
             double remaining = g_frame_target_interval - elapsed;
-            /* Only sleep if there's a meaningful gap (> 2 ms).
-             * With timeBeginPeriod(1), Sleep has ~1 ms precision.
-             * No spin loop — a few ms of jitter is fine for fps capping. */
             if (remaining > 0.002) {
-                Sleep((DWORD)(remaining * 1000.0));
+                /* SetWaitableTimer with 100ns ticks, negative = relative */
+                LARGE_INTEGER due;
+                due.QuadPart = (LONGLONG)(remaining * -10000000.0);
+                if (g_frame_timer != NULL) {
+                    SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
+                    WaitForSingleObject(g_frame_timer, INFINITE);
+                }
             }
         }
         g_last_frame_time = glfwGetTime();
@@ -1378,8 +1523,20 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
 /* ========================================================================
  * Shutdown
  * ======================================================================== */
+/* ---- atexit handler: ensure timeEndPeriod even on abnormal exit ---- */
+static void cleanup_time_period(void) {
+    if (g_using_time_period) {
+        timeEndPeriod(1);
+        g_using_time_period = false;
+    }
+}
+
 void overlay_window_shutdown(void) {
-    timeEndPeriod(1);
+    if (g_frame_timer != NULL) {
+        CloseHandle(g_frame_timer);
+        g_frame_timer = NULL;
+    }
+    cleanup_time_period();
 
     if (g_keyboard_hook != NULL) {
         UnhookWindowsHookEx(g_keyboard_hook);

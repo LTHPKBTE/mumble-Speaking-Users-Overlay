@@ -143,7 +143,6 @@ target_include_directories(plugin SYSTEM PRIVATE
 target_link_libraries(plugin PRIVATE
     cimgui
     ${GLFW_LIBRARIES}
-    winmm
 )
 
 # Compiler flags (MSVC)
@@ -190,7 +189,6 @@ if(OVERLAY_BUILD_STANDALONE)
     target_link_libraries(overlay_test PRIVATE
         cimgui
         ${GLFW_LIBRARIES}
-        winmm
     )
     target_compile_definitions(overlay_test PRIVATE OVERLAY_STANDALONE_TEST)
     target_compile_definitions(overlay_test PRIVATE _CRT_SECURE_NO_WARNINGS)

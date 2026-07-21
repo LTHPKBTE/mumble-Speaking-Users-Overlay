@@ -17,4 +17,7 @@
 
 void OverlayGlfwSetWindowAttrib(GLFWwindow* window, int attrib, int value);
 
+/* Retrieve dedup stats for logging. Returns true while stats are being collected. */
+bool OverlayGlfwAttribGetStats(long long *out_skipped, long long *out_passed);
+
 #define glfwSetWindowAttrib OverlayGlfwSetWindowAttrib
