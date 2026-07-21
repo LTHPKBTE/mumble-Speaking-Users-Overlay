@@ -38,7 +38,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: plugin-windows-x64-${{ inputs.build_type || 'Release' }}
-          path: build/${{ inputs.build_type || 'Release' }}/plugin.dll
+          path: |
+            build/${{ inputs.build_type || 'Release' }}/plugin.dll
+            build/${{ inputs.build_type || 'Release' }}/plugin.pdb
           if-no-files-found: error
 
       - name: Standalone test (skeleton)
@@ -46,13 +48,12 @@ jobs:
         continue-on-error: true
 
   # ==============================================================
-  # Release — create GitHub Release with plugin.dll
-  # (on tag push or manual dispatch)
+  # Release — create GitHub Release with plugin.dll (tag push only)
   # ==============================================================
   release:
     name: Create Release
     needs: [build-windows]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -71,6 +72,7 @@ jobs:
           cp manifest.xml release/
           # Copy Windows binary
           cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.dll release/plugin.dll 2>/dev/null || true
+          cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.pdb release/plugin.pdb 2>/dev/null || true
           # Create .mumble_plugin zip
           cd release
           zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll 2>/dev/null || true
@@ -82,6 +84,7 @@ jobs:
           files: |
             SpeakingUsersOverlay.mumble_plugin
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.dll
+            artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.pdb
           body: |
             ## Installation
             1. Download `SpeakingUsersOverlay.mumble_plugin`
