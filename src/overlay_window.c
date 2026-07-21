@@ -180,7 +180,6 @@ static LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
-#endif
 
 /* ========================================================================
  * Configuration defaults
