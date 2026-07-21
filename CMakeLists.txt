@@ -66,8 +66,11 @@ set(CIMGUI_BINDING
 )
 
 # Backend implementations (C++)
+# imgui_impl_glfw.cpp is wrapped via imgui_impl_glfw_overlay.cpp to deduplicate
+# redundant glfwSetWindowAttrib() calls (e.g. MOUSE_PASSTHROUGH at ~320 fps).
 set(CIMGUI_BACKENDS
-    ${IMGUI_BACKEND}/imgui_impl_glfw.cpp
+    ${CMAKE_SOURCE_DIR}/src/imgui_impl_glfw_overlay.cpp
+    ${CMAKE_SOURCE_DIR}/src/glfw_attrib_wrapper.cpp
     ${IMGUI_BACKEND}/imgui_impl_opengl3.cpp
 )
 
@@ -82,6 +85,10 @@ target_include_directories(cimgui PUBLIC
     "${IMGUI_ROOT}"
     "${IMGUI_BACKEND}"
     "${GLFW_INCLUDE_DIR}"
+)
+# Wrapper files in src/ need glfw_attrib_wrapper.h
+target_include_directories(cimgui PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
 )
 
 target_link_libraries(cimgui PUBLIC
