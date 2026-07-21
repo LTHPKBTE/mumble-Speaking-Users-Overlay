@@ -6,5 +6,5 @@
     <plugin os="macos"   arch="x64">libplugin.dylib</plugin>
   </assets>
   <name>SpeakingUsersOverlay</name>
-  <version>1.0.0</version>
+  <version>0.1.0</version>
 </bundle>

@@ -55,6 +55,8 @@ jobs:
     needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -86,16 +88,18 @@ jobs:
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.dll
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.pdb
           body: |
+            ## What's New in ${{ github.ref_name }}
+
+            - **Performance fix**: Eliminated high CPU usage caused by GPU driver VSync busy-wait, replaced with multi-profile framerate control
+            - **Hotkey fix**: Replaced keyboard hook with system-level hotkey registration, eliminating input lag for other applications at low FPS
+            - Configurable hotkeys with interactive key capture in settings panel
+            - Auto-detect monitor refresh rate for optimal FPS settings
+
             ## Installation
             1. Download `SpeakingUsersOverlay.mumble_plugin`
-            2. Open Mumble's Plugin Manager
-            3. Click "Install Plugin" and select the downloaded file
+            2. Open Mumble **Settings → Plugins → Install Plugin**
+            3. Select the downloaded file and enable the plugin
 
-            ## Features
-            - Real-time list of talking / whispering / shouting users
-            - Adjustable window transparency
-            - Always on top + mouse passthrough mode
-
-            > **Note:** Currently only Windows is officially supported. Linux and macOS users may try building from source, but the author does not have testing environments for those platforms.
+            > Currently only Windows is officially supported.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
