@@ -63,17 +63,7 @@
 
 ### 帧率控制
 
-插件使用高精度可等待定时器（`CreateWaitableTimerExW`）进行帧节奏控制 — 无忙等循环，无全局 `timeBeginPeriod` 副作用。老版本 Windows 自动回退到常规定时器 + `timeBeginPeriod`，并通过 `atexit` 确保异常退出时恢复系统时钟分辨率。
-
-**优先级（由高到低）：**
-1. 设置面板打开 → **打开设置时 FPS**
-2. 窗口可点击（非穿透）→ **可点击时 FPS**
-3. 穿透模式 + 鼠标空闲 → **无活动时 FPS**
-4. 穿透模式 + 鼠标活跃 → **点击穿透时 FPS**
-
-**自动检测刷新率：** 开启后，插件通过 GLFW 查询当前显示器刷新率（窗口中心点 → 所属显示器 → `vidmode.refreshRate`），验证在 30-350 Hz 范围内。同时响应 `WM_DISPLAYCHANGE` 事件（分辨率/刷新率变更/显示器热插拔），无轮询开销。
-
-**垂直同步警告：** 默认关闭。NVIDIA/AMD 驱动在开启 VSync 时可能在 `glfwSwapBuffers` 中忙等，导致高 CPU 占用。建议用帧率限制代替。
+支持多档位 FPS 优先级切换和显示器刷新率自动检测。实现细节（高精度定时器、空闲检测、GPU 驱动行为）见 [技术说明](docs/TECHNICAL.md#framerate-control)。
 
 ### 鼠标穿透行为
 
@@ -166,11 +156,7 @@ zip SpeakingUsersOverlay.mumble_plugin plugin.dll manifest.xml
 
 ## 架构
 
-```
-[Mumble 主线程]                    [渲染线程]
-  回调 --> speaking_users (mutex) <-- poll 回调 (只读)
-  可调用 MumbleAPI                 禁止调用 MumbleAPI
-```
+见 [技术说明](docs/TECHNICAL.md#architecture)。
 
 ## 协议
 

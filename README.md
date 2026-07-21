@@ -73,17 +73,7 @@ When **Mouse passthrough** is enabled:
 
 ### Framerate Control
 
-The plugin uses a high-resolution waitable timer (`CreateWaitableTimerExW`) for frame pacing — no spin-loop, no global `timeBeginPeriod` side effects.
-
-**Priority (highest to lowest):**
-1. Settings panel open → **Settings FPS**
-2. Window clickable (not passthrough) → **Clickable FPS**
-3. Passthrough + mouse idle → **Idle FPS**
-4. Passthrough + mouse active → **Passthrough FPS**
-
-**Auto-detect refresh rate:** When enabled, the plugin queries your monitor's current refresh rate via GLFW (window centre → monitor → `vidmode.refreshRate`). Validated to 30-350 Hz. Also responds to `WM_DISPLAYCHANGE` (resolution/refresh/monitor plug events) without polling overhead.
-
-**VSync warning:** Default off. NVIDIA/AMD drivers may busy-wait on `glfwSwapBuffers` with VSync enabled, burning CPU cycles. Limit framerate instead.
+The plugin uses multiple FPS profiles with priority-based switching and automatic monitor refresh rate detection. For implementation details (high-res timer, idle detection, GPU driver behaviour), see [Technical Notes](docs/TECHNICAL.md#framerate-control).
 
 ### Speaker List Behavior
 
@@ -168,11 +158,7 @@ Double-click the `.mumble_plugin` file or use **Settings > Plugins > Install Plu
 
 ## Architecture
 
-```
-[Mumble main thread]                [Render thread]
-  callbacks --> speaking_users (mutex) <-- poll callback (read only)
-  MumbleAPI allowed                  MumbleAPI forbidden
-```
+See [Technical Notes](docs/TECHNICAL.md#architecture).
 
 ## License
 
