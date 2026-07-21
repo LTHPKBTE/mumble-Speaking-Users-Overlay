@@ -112,9 +112,9 @@ Saved config location:
 
 ## Prebuilt Binary
 
-Prebuilt binaries are available from the **Actions** tab of the GitHub repository. Look for the latest successful workflow run, scroll to **Artifacts**, and download `plugin-windows-x64-Release`. Extract the plugin file and follow the [installation instructions](#4-install-to-mumble) below.
+Prebuilt binaries are available from the [**Releases**](https://github.com/LTHPKBTE/mumble-overlay-plugin/releases) page. Download `plugin.dll` from the latest release and follow the [installation instructions](#4-install-to-mumble) below.
 
-> Prebuilt binaries are provided for convenience. It is strongly recommended to review the source code and build from source if you have any security concerns.
+> Prebuilt binaries are provided for convenience. Reviewing the source code and building from source is strongly recommended if you have security concerns.
 
 ## Build
 
@@ -156,11 +156,10 @@ cmake --build build
 **Manual install:**
 - Windows: Copy `plugin.dll` to `%APPDATA%\Mumble\Mumble\Plugins\`
 
-**Bundle as .mumble_plugin (optional):**
+**Bundle as .mumble_plugin:** *(not yet functional)*
 ```bash
 zip SpeakingUsersOverlay.mumble_plugin plugin.dll manifest.xml
 ```
-Double-click the `.mumble_plugin` file or use **Settings > Plugins > Install Plugin**.
 
 > The installation steps above (**Step 4**) apply to both self-built and prebuilt binaries.
 

@@ -66,25 +66,10 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare release bundle
-        run: |
-          BUILD_TYPE="${{ inputs.build_type || 'Release' }}"
-          mkdir -p release
-          # Copy manifest
-          cp manifest.xml release/
-          # Copy Windows binary
-          cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.dll release/plugin.dll 2>/dev/null || true
-          cp artifacts/plugin-windows-x64-${BUILD_TYPE}/plugin.pdb release/plugin.pdb 2>/dev/null || true
-          # Create .mumble_plugin zip
-          cd release
-          zip ../SpeakingUsersOverlay.mumble_plugin manifest.xml plugin.dll 2>/dev/null || true
-          cd ..
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            SpeakingUsersOverlay.mumble_plugin
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.dll
             artifacts/plugin-windows-x64-${{ inputs.build_type || 'Release' }}/plugin.pdb
           body: |
@@ -96,9 +81,9 @@ jobs:
             - Auto-detect monitor refresh rate for optimal FPS settings
 
             ## Installation
-            1. Download `SpeakingUsersOverlay.mumble_plugin`
+            1. Download `plugin.dll` from the release assets
             2. Open Mumble **Settings → Plugins → Install Plugin**
-            3. Select the downloaded file and enable the plugin
+            3. Select `plugin.dll` and enable the plugin
 
             > Currently only Windows is officially supported.
         env:

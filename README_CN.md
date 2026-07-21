@@ -110,7 +110,7 @@
 
 ## 预构建二进制文件
 
-可以从 GitHub 仓库的 **Actions** 标签页下载预构建文件。找到最近一次成功的构建，滚动到 **Artifacts** 部分，下载 `plugin-windows-x64-Release`，解压后按照下面的[安装教程](#4-安装到-mumble)操作。
+预构建文件可从 [**Releases**](https://github.com/LTHPKBTE/mumble-overlay-plugin/releases) 页面下载。从最新版本中下载 `plugin.dll`，按照下面的[安装教程](#4-安装到-mumble)操作即可。
 
 > 预构建文件仅为了方便使用。如有安全顾虑，强烈建议审查源码并自行构建。
 
@@ -154,11 +154,10 @@ cmake --build build
 **手动安装：**
 - Windows：将 `plugin.dll` 复制到 `%APPDATA%\Mumble\Mumble\Plugins\`
 
-**打包为 .mumble_plugin（可选）：**
+**打包为 .mumble_plugin：** *（尚未完成）*
 ```bash
 zip SpeakingUsersOverlay.mumble_plugin plugin.dll manifest.xml
 ```
-双击 `.mumble_plugin` 文件或用 **设置 > 插件 > 安装插件**。
 
 > 以上**第 4 步**的安装说明同样适用于自行构建和预构建的二进制文件。
 
