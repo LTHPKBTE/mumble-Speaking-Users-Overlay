@@ -94,6 +94,10 @@ static volatile bool    g_display_changed       = false;
 /* ---- RegisterHotKey conflict flag — triggers settings auto-popup on first frame ---- */
 static volatile bool    g_hotkey_conflict_on_init = false;
 
+/* ---- Legacy VSync flag — old config had VSync on; force off + warn on first frame ---- */
+static volatile bool    g_vsync_legacy_warning    = false;
+static bool             g_was_legacy_upgrade      = false;  /* persists after popup, for UI warning */
+
 /* ---- Optimization: cached values to avoid redundant work ---- */
 static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
 
@@ -142,10 +146,7 @@ static void cleanup_time_period(void);  /* forward decl — defined near shutdow
 static double  g_frame_target_interval = 0.0;
 static double  g_last_frame_time       = 0.0;
 
-/* ---- Idle detection for fps_idle ---- */
-static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse move/click/scroll */
-
-/* ---- Global hotkeys: RegisterHotKey (primary) + compat-mode hook thread ---- */
+/* ---- Global hotkeys: RegisterHotKey ---- */
 #define HOTKEY_ID_TOGGLE        100
 #define HOTKEY_ID_SHOW          101
 #define HOTKEY_ID_TOGGLE_STAGING 102  /* staging slot for atomic swap */
@@ -153,11 +154,6 @@ static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse 
 
 static volatile LONG g_hotkey_toggle_passthrough = 0;
 static volatile LONG g_hotkey_show_window        = 0;
-
-/* Compatibility-mode low-level keyboard hook thread (opt-in, only for conflicted hotkeys) */
-static HHOOK  g_compat_hook       = NULL;
-static HANDLE g_compat_hook_thread = NULL;
-static volatile bool g_compat_hook_running = false;
 
 /* WNDPROC for subclassing */
 static WNDPROC g_prev_wndproc       = NULL;
@@ -168,8 +164,6 @@ static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
 static void register_all_hotkeys(void);
 static void unregister_all_hotkeys(void);
-static void start_compat_hook_thread(void);
-static void stop_compat_hook_thread(void);
 
 static float clamp01f(float v);
 static ImVec4 with_text_alpha(ImVec4 color);
@@ -220,7 +214,7 @@ static void load_cjk_font(void) {
 }
 
 /* ========================================================================
- * Global hotkeys — RegisterHotKey + compat-mode hook thread
+ * Global hotkeys — RegisterHotKey
  * ======================================================================== */
 
 /* Convert a Win32 VK + modifiers to a RegisterHotKey call. MOD_NOREPEAT
@@ -261,98 +255,6 @@ static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
     UnregisterHotKey(hwnd, active_id);
     /* Active/staging IDs are now swapped logically — caller tracks which is which. */
     return true;
-}
-
-/* ---- Compatibility-mode hook thread ---- */
-
-/* Per-binding fallback entry for the hook thread */
-typedef struct compat_binding_t {
-    int  vk;
-    UINT mods;
-    volatile LONG *signal;
-} compat_binding_t;
-
-static compat_binding_t g_compat_bindings[2];
-static int              g_compat_binding_count = 0;
-
-static LRESULT CALLBACK compat_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-        const KBDLLHOOKSTRUCT *kb = (const KBDLLHOOKSTRUCT *)lParam;
-
-        bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        bool shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
-        bool alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
-        bool super = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
-                   || (GetAsyncKeyState(VK_RWIN)   & 0x8000) != 0;
-
-        UINT active = 0;
-        if (ctrl)  active |= MOD_CONTROL;
-        if (shift) active |= MOD_SHIFT;
-        if (alt)   active |= MOD_ALT;
-        if (super) active |= MOD_WIN;
-
-        for (int i = 0; i < g_compat_binding_count; i++) {
-            if ((UINT)kb->vkCode == (UINT)g_compat_bindings[i].vk
-                && active == g_compat_bindings[i].mods) {
-                InterlockedExchange(g_compat_bindings[i].signal, 1);
-            }
-        }
-    }
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-}
-
-static DWORD WINAPI compat_hook_thread_proc(LPVOID) {
-    g_compat_hook = SetWindowsHookEx(WH_KEYBOARD_LL, compat_hook_proc,
-                                     GetModuleHandle(NULL), 0);
-    if (g_compat_hook == NULL) {
-        g_compat_hook_running = false;
-        return 1;
-    }
-
-    MSG msg;
-    while (g_compat_hook_running) {
-        /* GetMessage blocks the thread, zero CPU — only wakes on hook events. */
-        if (GetMessage(&msg, NULL, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
-
-    UnhookWindowsHookEx(g_compat_hook);
-    g_compat_hook = NULL;
-    return 0;
-}
-
-static void start_compat_hook_thread(void) {
-    if (g_compat_hook_thread != NULL) return;
-
-    /* Populate fallback bindings from config */
-    g_compat_binding_count = 0;
-    if (g_config.hotkey_toggle_vk != 0) {
-        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_toggle_vk;
-        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_toggle_mods;
-        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_toggle_passthrough;
-        g_compat_binding_count++;
-    }
-    if (g_config.hotkey_show_vk != 0) {
-        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_show_vk;
-        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_show_mods;
-        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_show_window;
-        g_compat_binding_count++;
-    }
-
-    g_compat_hook_running = true;
-    g_compat_hook_thread = CreateThread(NULL, 0, compat_hook_thread_proc, NULL, 0, NULL);
-}
-
-static void stop_compat_hook_thread(void) {
-    if (g_compat_hook_thread == NULL) return;
-    g_compat_hook_running = false;
-    PostThreadMessage(GetThreadId(g_compat_hook_thread), WM_NULL, 0, 0);
-    WaitForSingleObject(g_compat_hook_thread, 2000);
-    CloseHandle(g_compat_hook_thread);
-    g_compat_hook_thread = NULL;
-    g_compat_binding_count = 0;
 }
 
 /* ========================================================================
@@ -436,14 +338,11 @@ overlay_config_t overlay_config_default(void) {
     cfg.fps_passthrough  = 15;
     cfg.fps_clickable    = 60;
     cfg.fps_settings_open = 60;
-    cfg.fps_idle         = 4;
-    cfg.idle_fps_timeout = 5.0f;
     cfg.auto_detect_refresh = true;
     cfg.hotkey_toggle_vk   = 'P';
     cfg.hotkey_toggle_mods = MOD_CONTROL | MOD_SHIFT;
     cfg.hotkey_show_vk     = 'H';
     cfg.hotkey_show_mods   = MOD_CONTROL | MOD_SHIFT;
-    cfg.hotkey_compat_mode = false;
     return cfg;
 }
 
@@ -507,20 +406,23 @@ static void overlay_config_save(void) {
     fprintf(f, "fps_passthrough=%d\n", g_config.fps_passthrough);
     fprintf(f, "fps_clickable=%d\n", g_config.fps_clickable);
     fprintf(f, "fps_settings_open=%d\n", g_config.fps_settings_open);
-    fprintf(f, "fps_idle=%d\n", g_config.fps_idle);
-    fprintf(f, "idle_fps_timeout=%.1f\n", (double)g_config.idle_fps_timeout);
     fprintf(f, "auto_detect_refresh=%d\n", g_config.auto_detect_refresh ? 1 : 0);
     fprintf(f, "hotkey_toggle_vk=%d\n",   g_config.hotkey_toggle_vk);
     fprintf(f, "hotkey_toggle_mods=%d\n",  g_config.hotkey_toggle_mods);
     fprintf(f, "hotkey_show_vk=%d\n",     g_config.hotkey_show_vk);
     fprintf(f, "hotkey_show_mods=%d\n",    g_config.hotkey_show_mods);
-    fprintf(f, "hotkey_compat_mode=%d\n",   g_config.hotkey_compat_mode ? 1 : 0);
     fclose(f);
 }
+
+/* Set to true by overlay_config_load when legacy config keys are detected.
+ * Used to force VSync off on upgrade (old configs often had it enabled, which
+ * causes high CPU usage from GPU driver busy-wait). */
+static bool g_config_is_legacy = false;
 
 static void overlay_config_load(overlay_config_t *cfg) {
     /* Start from defaults, then override from file if it exists */
     *cfg = overlay_config_default();
+    g_config_is_legacy = false;
 
     const char *cfg_path = overlay_config_path();
     if (!cfg_path) {
@@ -566,19 +468,15 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
         else if (sscanf(line, "debug_show_fps=%d", &ival) == 1) cfg->debug_show_fps = (ival != 0);
         else if (sscanf(line, "custom_fps_enabled=%d", &ival) == 1) {
-            /* backward compat: old flag → modern split config */
-            if (ival != 0) {
-                /* Old: custom framerate ON (= vsync off + limit FPS) */
-                cfg->vsync_enabled = false;
-                cfg->fps_passthrough  = 15;
-                cfg->fps_clickable    = 60;
-                cfg->fps_settings_open = 60;
-                cfg->fps_idle         = 4;
-                cfg->idle_fps_timeout = 5.0f;
-            } else {
-                /* Old: custom framerate OFF (= vsync on) */
-                cfg->vsync_enabled = true;
-            }
+            /* backward compat: old flag → modern split config.
+             * VSync is forced off on legacy upgrade regardless of old setting
+             * — GPU driver busy-wait at high refresh rates makes it undesirable
+             * for an overlay. The user can re-enable it in settings if desired. */
+            g_config_is_legacy = true;
+            cfg->fps_passthrough  = 15;
+            cfg->fps_clickable    = 60;
+            cfg->fps_settings_open = 60;
+            /* vsync stays at default (false) */
         }
         else if (sscanf(line, "custom_fps_value=%d", &ival) == 1) {
             /* backward compat: apply old single-value setting to modern split config */
@@ -589,14 +487,13 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "fps_passthrough=%d", &ival) == 1) cfg->fps_passthrough = ival;
         else if (sscanf(line, "fps_clickable=%d", &ival) == 1) cfg->fps_clickable = ival;
         else if (sscanf(line, "fps_settings_open=%d", &ival) == 1) cfg->fps_settings_open = ival;
-        else if (sscanf(line, "fps_idle=%d", &ival) == 1) cfg->fps_idle = ival;
-        else if (sscanf(line, "idle_fps_timeout=%f", &fval) == 1) cfg->idle_fps_timeout = fval;
         else if (sscanf(line, "auto_detect_refresh=%d", &ival) == 1) cfg->auto_detect_refresh = (ival != 0);
         else if (sscanf(line, "hotkey_toggle_vk=%d", &ival) == 1)   cfg->hotkey_toggle_vk = ival;
         else if (sscanf(line, "hotkey_toggle_mods=%d", &ival) == 1)  cfg->hotkey_toggle_mods = ival;
         else if (sscanf(line, "hotkey_show_vk=%d", &ival) == 1)     cfg->hotkey_show_vk = ival;
         else if (sscanf(line, "hotkey_show_mods=%d", &ival) == 1)    cfg->hotkey_show_mods = ival;
-        else if (sscanf(line, "hotkey_compat_mode=%d", &ival) == 1)  cfg->hotkey_compat_mode = (ival != 0);
+        /* hotkey_compat_mode, fps_idle, idle_fps_timeout are no longer
+         * supported — silently ignore if present in old configs */
     }
     fclose(f);
 }
@@ -643,9 +540,16 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.fps_passthrough    = cfg->fps_passthrough;
         g_config.fps_clickable      = cfg->fps_clickable;
         g_config.fps_settings_open  = cfg->fps_settings_open;
-        g_config.fps_idle           = cfg->fps_idle;
-        g_config.idle_fps_timeout   = cfg->idle_fps_timeout;
         g_config.auto_detect_refresh = cfg->auto_detect_refresh;
+
+        /* Legacy config upgrade: force VSync off. Old configs often had it
+         * enabled, which causes high CPU usage from GPU driver busy-wait.
+         * The first frame will pop up settings with a notice. */
+        if (g_config_is_legacy) {
+            g_config.vsync_enabled = false;
+            g_vsync_legacy_warning = true;
+        }
+
         if (cfg->hotkey_toggle_vk != 0 || cfg->hotkey_toggle_mods != 0) {
             g_config.hotkey_toggle_vk   = cfg->hotkey_toggle_vk;
             g_config.hotkey_toggle_mods = cfg->hotkey_toggle_mods;
@@ -654,7 +558,6 @@ int overlay_window_init(const overlay_config_t *cfg) {
             g_config.hotkey_show_vk     = cfg->hotkey_show_vk;
             g_config.hotkey_show_mods   = cfg->hotkey_show_mods;
         }
-        g_config.hotkey_compat_mode = cfg->hotkey_compat_mode;
     }
     detect_system_language();
 
@@ -764,20 +667,16 @@ int overlay_window_init(const overlay_config_t *cfg) {
     apply_config_to_window();
 
     /* Register global hotkeys via RegisterHotKey (zero-latency, no hook overhead).
-     * Check for conflicts — if any hotkey fails and compatibility mode is off,
-     * set a flag to auto-popup the settings panel on the first frame. */
+     * Check for conflicts — if any hotkey fails, auto-popup settings on first frame. */
     {
         HWND hwnd = glfwGetWin32Window(g_window);
         bool ok_toggle = register_one_hotkey(hwnd, HOTKEY_ID_TOGGLE,
             g_config.hotkey_toggle_vk, g_config.hotkey_toggle_mods);
         bool ok_show   = register_one_hotkey(hwnd, HOTKEY_ID_SHOW,
             g_config.hotkey_show_vk, g_config.hotkey_show_mods);
-        if ((!ok_toggle || !ok_show) && !g_config.hotkey_compat_mode) {
+        if (!ok_toggle || !ok_show) {
             g_hotkey_conflict_on_init = true;
         }
-    }
-    if (g_config.hotkey_compat_mode) {
-        start_compat_hook_thread();
     }
 
     g_first_frame = true;
@@ -963,17 +862,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     PROF_TICK();
-
-    /* ---- Idle detection: track last user input for fps_idle ---- */
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f
-            || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
-            || io.MouseWheel != 0.0f
-            || io.WantCaptureMouse) {
-            g_last_user_input_time = ImGui::GetTime();
-        }
-    }
 
     /* ---- Process display change (monitor resolution / refresh rate) ---- */
     if (g_display_changed) {
@@ -1377,11 +1265,16 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             }
             g_first_frame = false;
 
-            /* Auto-popup settings on first launch if RegisterHotKey failed (conflict)
-             * and compatibility mode is not enabled. Only on the very first frame,
-             * never during gameplay. */
-            if (g_hotkey_conflict_on_init) {
+            /* Auto-popup settings on first launch if:
+             * - RegisterHotKey failed (conflict), or
+             * - Config was upgraded from a legacy version (VSync forced off).
+             * Only on the very first frame, never during gameplay. */
+            if (g_hotkey_conflict_on_init || g_vsync_legacy_warning) {
+                if (g_vsync_legacy_warning) {
+                    g_was_legacy_upgrade = true;
+                }
                 g_hotkey_conflict_on_init = false;
+                g_vsync_legacy_warning    = false;
                 g_settings_open = true;
             }
         }
@@ -1622,8 +1515,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                                         /* Re-register hotkeys on change */
                                         unregister_all_hotkeys();
                                         register_all_hotkeys();
-                                        /* If compat mode is off, clear conflict flag
-                                         * (new key may not conflict) */
+                                        /* Clear conflict flag — new key may not conflict */
                                         g_hotkey_conflict_on_init = false;
                                     }
                                     break;
@@ -1638,25 +1530,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 hotkey_button("显示窗口", "Show Window",
                     &g_config.hotkey_show_vk, &g_config.hotkey_show_mods, 2);
 
-                /* Compatibility mode checkbox */
-                if (ImGui::Checkbox(LOC("兼容模式", "Compatibility mode"),
-                                    &g_config.hotkey_compat_mode)) {
-                    settings_changed = true;
-                    if (g_config.hotkey_compat_mode) {
-                        start_compat_hook_thread();
-                    } else {
-                        stop_compat_hook_thread();
-                    }
-                }
-                if (g_config.hotkey_compat_mode) {
-                    ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.15f, 1.0f),
-                        LOC("兼容模式下快捷键可能与其他程序同时触发。",
-                            "Hotkeys may trigger in other apps simultaneously in this mode."));
-                } else {
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("快捷键被占用时，请更换组合键或启用兼容模式。",
-                            "If the hotkey is occupied, change the combination or enable compatibility mode."));
-                }
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                    LOC("快捷键被占用时，请更换组合键。",
+                        "If the hotkey is occupied, change the key combination."));
             }
 
             ImGui::Separator();
@@ -1671,8 +1547,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 if (g_config.vsync_enabled) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-                        LOC("⚠ 部分系统上VSync可能导致高CPU占用",
-                            "⚠ VSync may cause high CPU usage on some systems"));
+                        LOC("部分系统上VSync可能导致高CPU占用",
+                            "VSync may cause high CPU usage on some systems"));
+                }
+                if (g_was_legacy_upgrade) {
+                    ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
+                        LOC("已从旧版配置升级，垂直同步已自动关闭。如需开启请手动勾选。",
+                            "Upgraded from an older config — VSync was turned off. Re-enable above if needed."));
                 }
 
                 /* Auto-detect monitor refresh rate */
@@ -1715,8 +1596,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 };
 
                 ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                    LOC("优先级: 设置面板 > 可点击 > 无活动 > 穿透。范围 15-400。",
-                        "Priority: Settings panel > Clickable > Idle > Passthrough. Range 15-400."));
+                    LOC("优先级: 设置面板 > 可点击 > 穿透。范围 15-400。",
+                        "Priority: Settings panel > Clickable > Passthrough. Range 15-400."));
 
                 if (!g_config.vsync_enabled) {
                     bool auto_locked = g_config.auto_detect_refresh;
@@ -1724,26 +1605,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     fps_input("点击穿透时 FPS", "Passthrough FPS", &g_config.fps_passthrough, false);
                     fps_input("可点击时 FPS", "Clickable FPS", &g_config.fps_clickable, auto_locked);
                     fps_input("打开设置时 FPS", "Settings FPS", &g_config.fps_settings_open, auto_locked);
-                    fps_input("无活动时 FPS", "Idle FPS", &g_config.fps_idle, false);
 
                     if (auto_locked) {
                         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
                             LOC("可点击/设置 FPS 由显示器刷新率自动决定。",
                                 "Clickable/Settings FPS auto-set from monitor refresh rate."));
                     }
-
-                    ImGui::Text(LOC("无活动超时(秒)", "Idle timeout (s)"));
-                    ImGui::SameLine(180.0f);
-                    ImGui::PushItemWidth(100.0f);
-                    if (ImGui::SliderFloat("##idle_timeout", &g_config.idle_fps_timeout, 1.0f, 120.0f, "%.0f")) {
-                        if (g_config.idle_fps_timeout < 1.0f) g_config.idle_fps_timeout = 1.0f;
-                        if (g_config.idle_fps_timeout > 120.0f) g_config.idle_fps_timeout = 120.0f;
-                        settings_changed = true;
-                    }
-                    ImGui::PopItemWidth();
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("无鼠标活动超过此时间后降至无活动帧率",
-                            "Drop to idle FPS after no mouse activity for this duration"));
                 } else {
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
                         LOC("垂直同步启用时，上述帧率设置无效。",
@@ -1801,17 +1668,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.fps_passthrough    = def.fps_passthrough;
                 g_config.fps_clickable      = def.fps_clickable;
                 g_config.fps_settings_open  = def.fps_settings_open;
-                g_config.fps_idle           = def.fps_idle;
-                g_config.idle_fps_timeout   = def.idle_fps_timeout;
                 g_config.auto_detect_refresh = def.auto_detect_refresh;
                 g_config.hotkey_toggle_vk   = def.hotkey_toggle_vk;
                 g_config.hotkey_toggle_mods = def.hotkey_toggle_mods;
                 g_config.hotkey_show_vk     = def.hotkey_show_vk;
                 g_config.hotkey_show_mods   = def.hotkey_show_mods;
-                g_config.hotkey_compat_mode = def.hotkey_compat_mode;
                 /* Re-register all hotkeys with defaults */
                 unregister_all_hotkeys();
-                stop_compat_hook_thread();
                 register_all_hotkeys();
                 /* Re-detect when resetting all settings */
                 overlay_apply_auto_refresh();
@@ -1959,35 +1822,47 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         } else if (!g_config.mouse_passthrough) {
             /* Window is clickable (not in passthrough mode) */
             target_fps = g_config.fps_clickable;
-            /* Reset idle timer when window is clickable — user may interact */
-            g_last_user_input_time = ImGui::GetTime();
         } else {
-            /* Passthrough mode: check for idle timeout */
-            double idle_elapsed = ImGui::GetTime() - g_last_user_input_time;
-            if (g_config.idle_fps_timeout > 0.0f && idle_elapsed > (double)g_config.idle_fps_timeout) {
-                target_fps = g_config.fps_idle;
-            } else {
-                target_fps = g_config.fps_passthrough;
-            }
+            /* Passthrough mode */
+            target_fps = g_config.fps_passthrough;
         }
         if (target_fps < 1) target_fps = 1;
         if (target_fps > 400) target_fps = 400;
         g_frame_target_interval = 1.0 / (double)target_fps;
     }
 
-    /* ---- High-resolution waitable timer (replaces Sleep + timeBeginPeriod) ---- */
+    /* ---- Frame pacing via high-resolution waitable timer ----
+     * Sleeps the full remaining time in a single SetWaitableTimer call.
+     * The timer has sub-ms precision on Win10 1803+; any late-wake jitter
+     * (typically < 1 ms) is absorbed by g_last_frame_time resetting to the
+     * actual wall-clock time — it does not accumulate across frames.
+     * Fallback: Sleep() when no waitable timer is available (extremely rare). */
     if (g_frame_target_interval > 0.0) {
         double now = glfwGetTime();
         if (g_last_frame_time > 0.0) {
-            double elapsed = now - g_last_frame_time;
-            double remaining = g_frame_target_interval - elapsed;
-            if (remaining > 0.002) {
-                /* SetWaitableTimer with 100ns ticks, negative = relative */
-                LARGE_INTEGER due;
-                due.QuadPart = (LONGLONG)(remaining * -10000000.0);
+            double remaining = g_last_frame_time + g_frame_target_interval - now;
+
+            if (remaining > 0.0) {
                 if (g_frame_timer != NULL) {
+                    /* SetWaitableTimer with 100ns units.
+                     * Negative QuadPart = relative time. */
+                    LARGE_INTEGER due;
+                    due.QuadPart = (LONGLONG)(remaining * -10000000.0);
+                    if (due.QuadPart == 0) {
+                        due.QuadPart = -1;  /* minimum non-zero relative time */
+                    }
                     SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
                     WaitForSingleObject(g_frame_timer, INFINITE);
+                } else {
+                    /* Last-resort fallback: Sleep().
+                     * On modern Windows with timeBeginPeriod(1) this gives ~1ms
+                     * granularity. Without it, ~15.6ms — but this path is only
+                     * reached if BOTH CreateWaitableTimerExW and CreateWaitableTimer
+                     * failed, which is extremely unlikely. */
+                    DWORD sleep_ms = (DWORD)(remaining * 1000.0);
+                    if (sleep_ms > 0) {
+                        Sleep(sleep_ms);
+                    }
                 }
             }
         }
@@ -2019,8 +1894,6 @@ void overlay_window_shutdown(void) {
     }
     cleanup_time_period();
 
-    /* Stop compat-mode hook thread before unregistering hotkeys */
-    stop_compat_hook_thread();
     unregister_all_hotkeys();
 
     if (g_window != NULL) {

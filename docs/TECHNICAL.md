@@ -25,10 +25,18 @@ The effective target FPS is recalculated every frame based on the overlay's curr
 |---|---|---|---|
 | 1 (highest) | Settings panel is open | `fps_settings_open` | 60 |
 | 2 | Window is clickable (not in passthrough mode) | `fps_clickable` | 60 |
-| 3 | Passthrough mode + no mouse activity for `idle_fps_timeout` seconds | `fps_idle` | 4 |
-| 4 (lowest) | Passthrough mode + recent mouse activity | `fps_passthrough` | 15 |
+| 3 (lowest) | Passthrough mode | `fps_passthrough` | 15 |
 
 When VSync is enabled (`vsync_enabled = true`), all FPS profiles are ignored and `glfwSwapInterval(1)` is used instead.
+
+### Legacy Config Upgrade (VSync)
+
+Old versions of the plugin stored framerate settings under a different key (`custom_fps_enabled`). When a legacy config file is detected on load:
+
+- VSync is **forced off** regardless of the old setting — the GPU driver busy-wait behaviour (see [GPU Driver VSync Busy-Wait](#gpu-driver-vsync-busy-wait)) makes it undesirable for an overlay at typical refresh rates.
+- The settings panel auto-opens on the first frame with a notice.
+- The user can re-enable VSync in the settings panel if desired; the new choice is saved normally and not overridden on subsequent launches.
+- Detection is based on the presence of the `custom_fps_enabled` key in the config file — once the file is saved in the new format that key is no longer written.
 
 ### Auto-Detect Monitor Refresh Rate
 
@@ -47,33 +55,26 @@ When `auto_detect_refresh` is enabled (default):
    - **Reset All Settings** button
 5. `WM_DISPLAYCHANGE` is a low-frequency system event. It does **not** fire on window moves, DPI changes, or regular painting — no polling overhead.
 
-### Idle Detection
-
-Mouse activity is tracked per-frame via ImGui IO:
-
-```c
-ImGuiIO& io = ImGui::GetIO();
-if (io.MouseMoved || io.MouseDown[0..2] || io.WantCaptureMouse) {
-    g_last_user_input_time = ImGui::GetTime();
-}
-```
-
-The idle timeout only matters in **passthrough mode with the settings panel closed**. When the window is clickable, the idle timer is continuously reset (user may interact).
-
 ### Framerate Limiter Implementation
 
 The limiter runs after `glfwSwapBuffers`:
 
 1. Calculate effective target FPS from priority rules.
-2. Compute `remaining = (1.0 / target_fps) - elapsed_since_last_frame`.
-3. If `remaining > 2 ms`: sleep via `SetWaitableTimer` + `WaitForSingleObject`.
+2. Compute `remaining = last_frame_time + (1.0 / target_fps) - now`.
+3. Sleep the entire remaining time via `SetWaitableTimer` + `WaitForSingleObject`.
 
 ```c
-LARGE_INTEGER due;
-due.QuadPart = (LONGLONG)(remaining * -10000000.0);  // 100 ns units, negative = relative
-SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
-WaitForSingleObject(g_frame_timer, INFINITE);
+if (remaining > 0.0 && g_frame_timer != NULL) {
+    LARGE_INTEGER due;
+    due.QuadPart = (LONGLONG)(remaining * -10000000.0);  // 100ns units
+    SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
+    WaitForSingleObject(g_frame_timer, INFINITE);
+}
 ```
+
+`g_last_frame_time` is reset to the actual wall-clock time after the wait, so any late-wake jitter (typically < 1 ms) does not accumulate into subsequent frames. For an overlay, the sub-millisecond precision of a high-resolution waitable timer is generally sufficient without additional spin-waiting; the marginal jitter is unlikely to be perceptible at typical overlay FPS targets.
+
+**Preemption behaviour**: If a high-priority process preempts the CPU during the wait, the thread may wake past the deadline. `g_last_frame_time` resets to the actual time, so the next frame's deadline is based on the current wall clock — late-wake error does not propagate.
 
 ### Hidden Window Low-Power Mode
 
@@ -89,7 +90,7 @@ Two global hotkeys (Toggle Passthrough and Show Window) are configurable in the 
 
 ### WH_KEYBOARD_LL Limitations
 
-The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep (e.g., idle FPS = 4, meaning 250 ms sleeps), the hook chain could be blocked — `CallNextHookEx` might not execute until the render thread woke up. On affected systems, this could cause noticeable input lag for other applications.
+The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep, the hook chain could be blocked — `CallNextHookEx` might not execute until the render thread woke up. On affected systems, this could cause noticeable input lag for other applications.
 
 `RegisterHotKey` mitigates this: the kernel delivers `WM_HOTKEY` asynchronously via the message queue, with effectively no measurable latency on typical systems and no dependency on the render thread being awake.
 
@@ -124,15 +125,11 @@ if (msg == WM_HOTKEY) {
 }
 ```
 
-Volatile flags (`g_hotkey_toggle_passthrough`, `g_hotkey_show_window`) are checked on the render thread each frame. `InterlockedExchange` guarantees cross-thread visibility without a mutex.
+Volatile flags (`g_hotkey_toggle_passthrough`, `g_hotkey_show_window`) are checked on the render thread each frame. `InterlockedExchange` provides cross-thread visibility without a mutex on x86/x64 architectures.
 
 ### Conflict Detection
 
-On initialization, `register_all_hotkeys()` attempts to register both hotkeys. If either `RegisterHotKey` call fails (returns FALSE — the key is already owned by another process):
-
-1. If compatibility mode is **off**: `g_hotkey_conflict_on_init` is set to `true`.
-2. On the **first frame** after `g_first_frame` transitions to false, the settings panel auto-opens with a warning.
-3. This only happens on the very first launch — not during gameplay when a hotkey might be temporarily occupied.
+On initialization, `register_all_hotkeys()` attempts to register both hotkeys. If either `RegisterHotKey` call fails (returns FALSE — the key is already owned by another process), `g_hotkey_conflict_on_init` is set to `true`. On the **first frame** after `g_first_frame` transitions to false, the settings panel auto-opens with a warning. This only happens on the very first launch — not during gameplay when a hotkey might be temporarily occupied.
 
 ### Hotkey Editor
 
@@ -164,19 +161,7 @@ static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
 }
 ```
 
-This guarantees there is never a gap where the old hotkey is unregistered but the new one hasn't been registered yet.
-
-### Compatibility Mode (Fallback)
-
-An opt-in fallback when `RegisterHotKey` can't claim the desired key:
-
-- A dedicated thread runs a `GetMessage` loop with a `WH_KEYBOARD_LL` hook.
-- `GetMessage` blocks the thread — **zero CPU** when no keys are pressed.
-- The hook thread is completely independent of the render thread — frame-sleep does not affect it.
-- Per-binding entries (`compat_binding_t`) carry VK, modifiers, and a `volatile LONG*` signal pointer.
-- On match, `InterlockedExchange` sets the same signal flags used by the `WM_HOTKEY` path.
-
-**Note**: `WH_KEYBOARD_LL` hooks can trigger simultaneously in multiple applications. The settings UI shows an orange warning when compatibility mode is active.
+This avoids a gap where the old hotkey is unregistered before the new one is registered, though neither registration is atomic with respect to system-wide hotkey state.
 
 ### Config Persistence
 
@@ -185,7 +170,6 @@ hotkey_toggle_vk=80   (0x50 = 'P')
 hotkey_toggle_mods=3  (MOD_CONTROL | MOD_SHIFT)
 hotkey_show_vk=72     (0x48 = 'H')
 hotkey_show_mods=3
-hotkey_compat_mode=0
 ```
 
 Saved/loaded alongside all other settings. Reset All Settings restores defaults.
@@ -220,20 +204,31 @@ atexit(cleanup_time_period);
 - `atexit(cleanup_time_period)` ensures `timeEndPeriod(1)` is called even on abnormal program exit (crash, `abort()`, etc.).
 - Normal shutdown also calls `cleanup_time_period()` via `overlay_window_shutdown()`.
 
+### Last-Resort Sleep() Fallback
+
+If **both** `CreateWaitableTimerExW` and `CreateWaitableTimer` fail (extremely unlikely):
+
+```c
+DWORD sleep_ms = (DWORD)(remaining * 1000.0);
+if (sleep_ms > 0) { Sleep(sleep_ms); }
+```
+
+On systems with `timeBeginPeriod(1)` active this gives ~1 ms granularity; without it, ~15.6 ms. This path exists as a defensive fallback — in practice, `CreateWaitableTimer` is expected to succeed on nearly all supported Windows versions.
+
 ### Why Not Sleep()
 
-`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and increases power consumption. The waitable timer approach mitigates this on modern Windows (10 1803+).
+`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and can increase power consumption. The waitable timer approach helps avoid this trade-off on modern Windows (10 1803+).
 
 ---
 
 ## GPU Driver VSync Busy-Wait
 
-When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers` for the GPU's vertical blank interval. Some GPU drivers (notably NVIDIA and AMD) implement this wait as a **busy-loop** rather than an interrupt-based sleep, causing:
+When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers` for the GPU's vertical blank interval. Some GPU drivers (notably NVIDIA and AMD) may implement this wait as a **busy-loop** rather than an interrupt-based sleep, which can cause:
 
-- CPU usage pinned to 100% of one core at high refresh rates (e.g., 144 Hz).
-- The effect is especially pronounced for applications like overlays that have minimal GPU work per frame.
+- CPU usage near 100% of one core at high refresh rates (e.g., 144 Hz).
+- The effect tends to be more noticeable for applications like overlays that have minimal GPU work per frame.
 
-Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming near-zero CPU between frames.
+Setting `glfwSwapInterval(0)` (VSync off) and using the frame limiter instead typically avoids this. The limiter uses an OS waitable timer that puts the thread to sleep, generally consuming low CPU between frames.
 
 ## glfwSetWindowAttrib Wrapper
 
@@ -282,7 +277,7 @@ No changes to the GLFW submodule required.
 | File | Purpose |
 |---|---|
 | `src/plugin.c` | Mumble plugin entry point, callbacks, main/render thread management |
-| `src/overlay_window.c` | GLFW window, ImGui rendering, settings panel, frame limiter, hotkey system (RegisterHotKey + compat hook) |
+| `src/overlay_window.c` | GLFW window, ImGui rendering, settings panel, frame limiter, hotkey system (RegisterHotKey) |
 | `src/overlay_window.h` | Config struct, public API |
 | `src/speaking_users.c` | Thread-safe speaking user list (mutex-protected) |
 | `src/speaking_users.h` | Speaking user API |

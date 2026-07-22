@@ -75,10 +75,11 @@ jobs:
           body: |
             ## What's New in ${{ github.ref_name }}
 
-            - **Performance fix**: Eliminated high CPU usage caused by GPU driver VSync busy-wait, replaced with multi-profile framerate control
-            - **Hotkey fix**: Replaced keyboard hook with system-level hotkey registration, eliminating input lag for other applications at low FPS
-            - Configurable hotkeys with interactive key capture in settings panel
-            - Auto-detect monitor refresh rate for optimal FPS settings
+            - **Framerate limiter**: Simplified to pure high-resolution waitable timer — removed spin-waiting paths that added complexity with little benefit for overlay use
+            - **Hotkey simplification**: Removed the WH_KEYBOARD_LL fallback; the system-level `RegisterHotKey` path has been the only one since v0.1.0 and the hook could contribute to input lag on some configurations
+            - **Legacy config upgrade**: VSync is now forced off when upgrading from old-format config files, with an in-app warning popup explaining why
+            - **Removed mouse-idle FPS reduction**: This mechanism provided marginal benefit and added unnecessary logic to the framerate system
+            - Documentation updates and wording improvements across technical notes
 
             ## Installation
             1. Download `plugin.dll` from the release assets

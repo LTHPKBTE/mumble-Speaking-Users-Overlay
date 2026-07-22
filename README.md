@@ -49,11 +49,8 @@ Click the Settings button to open:
 | **Passthrough FPS** | Target frames per second when mouse passthrough is active (15-400). Default 15 |
 | **Clickable FPS** | Target FPS when the main window is interactive / clickable (15-400). Default 60, or auto-detected refresh rate |
 | **Settings FPS** | Target FPS when the settings panel is open (15-400, highest priority). Default 60, or auto-detected refresh rate |
-| **Idle FPS** | Target FPS when no mouse activity is detected for the idle timeout period (15-400). Default 4 |
-| **Idle timeout (s)** | Seconds of no mouse activity before dropping to idle FPS (1-120). Default 5 |
 | **Toggle Passthrough hotkey** | Click to capture a new key combination for disabling mouse passthrough |
 | **Show Window hotkey** | Click to capture a new key combination for showing a hidden window |
-| **Compatibility mode** | Enable when a hotkey cannot be registered (e.g., occupied by another program). May trigger simultaneously with other apps |
 | **Show Window** (button) | Re-show a hidden window |
 | **Reset Position** (button) | Reset window position and size to defaults |
 | **Reset All Settings** (button) | Reset all settings to factory defaults |
@@ -69,7 +66,7 @@ Two global hotkeys are configurable in the Settings panel:
 
 Click the hotkey button in Settings, then press the desired key combination — modifiers (`Ctrl`/`Shift`/`Alt`/`Win`) are captured automatically.
 
-If a hotkey conflicts with another application, a warning popup appears on first launch. You can either change the key combination or enable **Compatibility mode**.
+If a hotkey conflicts with another application, a warning popup appears on first launch so you can change the key combination.
 
 ### Mouse Passthrough Behavior
 
@@ -81,7 +78,7 @@ When **Mouse passthrough** is enabled:
 
 ### Framerate Control
 
-The plugin uses multiple FPS profiles with priority-based switching and automatic monitor refresh rate detection. For implementation details (high-res timer, idle detection, GPU driver behaviour), see [Technical Notes](docs/TECHNICAL.md#framerate-control).
+The plugin uses multiple FPS profiles with priority-based switching and automatic monitor refresh rate detection. For implementation details (high-res timer, GPU driver behaviour), see [Technical Notes](docs/TECHNICAL.md#framerate-control).
 
 ### Speaker List Behavior
 
