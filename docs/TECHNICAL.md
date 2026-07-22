@@ -72,7 +72,7 @@ if (remaining > 0.0 && g_frame_timer != NULL) {
 }
 ```
 
-`g_last_frame_time` is reset to the actual wall-clock time after the wait, so any late-wake jitter (typically < 1 ms) does not accumulate into subsequent frames. For an overlay, the sub-millisecond precision of a high-resolution waitable timer is sufficient without additional spin-waiting; the marginal jitter is not perceptible at any configured FPS.
+`g_last_frame_time` is reset to the actual wall-clock time after the wait, so any late-wake jitter (typically < 1 ms) does not accumulate into subsequent frames. For an overlay, the sub-millisecond precision of a high-resolution waitable timer is generally sufficient without additional spin-waiting; the marginal jitter is unlikely to be perceptible at typical overlay FPS targets.
 
 **Preemption behaviour**: If a high-priority process preempts the CPU during the wait, the thread may wake past the deadline. `g_last_frame_time` resets to the actual time, so the next frame's deadline is based on the current wall clock — late-wake error does not propagate.
 
@@ -125,7 +125,7 @@ if (msg == WM_HOTKEY) {
 }
 ```
 
-Volatile flags (`g_hotkey_toggle_passthrough`, `g_hotkey_show_window`) are checked on the render thread each frame. `InterlockedExchange` guarantees cross-thread visibility without a mutex.
+Volatile flags (`g_hotkey_toggle_passthrough`, `g_hotkey_show_window`) are checked on the render thread each frame. `InterlockedExchange` provides cross-thread visibility without a mutex on x86/x64 architectures.
 
 ### Conflict Detection
 
@@ -161,7 +161,7 @@ static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
 }
 ```
 
-This guarantees there is never a gap where the old hotkey is unregistered but the new one hasn't been registered yet.
+This avoids a gap where the old hotkey is unregistered before the new one is registered, though neither registration is atomic with respect to system-wide hotkey state.
 
 ### Config Persistence
 
@@ -209,11 +209,11 @@ atexit(cleanup_time_period);
 If **both** `CreateWaitableTimerExW` and `CreateWaitableTimer` fail (extremely unlikely):
 
 ```c
-DWORD sleep_ms = (DWORD)(sleep_duration * 1000.0);
+DWORD sleep_ms = (DWORD)(remaining * 1000.0);
 if (sleep_ms > 0) { Sleep(sleep_ms); }
 ```
 
-On systems with `timeBeginPeriod(1)` active this gives ~1 ms granularity; without it, ~15.6 ms. This path exists as a defensive fallback — in practice, at least `CreateWaitableTimer` succeeds on all supported Windows versions.
+On systems with `timeBeginPeriod(1)` active this gives ~1 ms granularity; without it, ~15.6 ms. This path exists as a defensive fallback — in practice, `CreateWaitableTimer` is expected to succeed on nearly all supported Windows versions.
 
 ### Why Not Sleep()
 
@@ -223,12 +223,12 @@ On systems with `timeBeginPeriod(1)` active this gives ~1 ms granularity; withou
 
 ## GPU Driver VSync Busy-Wait
 
-When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers` for the GPU's vertical blank interval. Some GPU drivers (notably NVIDIA and AMD) implement this wait as a **busy-loop** rather than an interrupt-based sleep, causing:
+When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers` for the GPU's vertical blank interval. Some GPU drivers (notably NVIDIA and AMD) may implement this wait as a **busy-loop** rather than an interrupt-based sleep, which can cause:
 
-- CPU usage pinned to 100% of one core at high refresh rates (e.g., 144 Hz).
-- The effect is especially pronounced for applications like overlays that have minimal GPU work per frame.
+- CPU usage near 100% of one core at high refresh rates (e.g., 144 Hz).
+- The effect tends to be more noticeable for applications like overlays that have minimal GPU work per frame.
 
-Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming low CPU between frames.
+Setting `glfwSwapInterval(0)` (VSync off) and using the frame limiter instead typically avoids this. The limiter uses an OS waitable timer that puts the thread to sleep, generally consuming low CPU between frames.
 
 ## glfwSetWindowAttrib Wrapper
 
