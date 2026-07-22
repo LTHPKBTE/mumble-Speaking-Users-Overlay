@@ -141,11 +141,7 @@ Volatile flags (`g_hotkey_toggle_passthrough`, `g_hotkey_show_window`) are check
 
 ### Conflict Detection
 
-On initialization, `register_all_hotkeys()` attempts to register both hotkeys. If either `RegisterHotKey` call fails (returns FALSE — the key is already owned by another process):
-
-1. If compatibility mode is **off**: `g_hotkey_conflict_on_init` is set to `true`.
-2. On the **first frame** after `g_first_frame` transitions to false, the settings panel auto-opens with a warning.
-3. This only happens on the very first launch — not during gameplay when a hotkey might be temporarily occupied.
+On initialization, `register_all_hotkeys()` attempts to register both hotkeys. If either `RegisterHotKey` call fails (returns FALSE — the key is already owned by another process), `g_hotkey_conflict_on_init` is set to `true`. On the **first frame** after `g_first_frame` transitions to false, the settings panel auto-opens with a warning. This only happens on the very first launch — not during gameplay when a hotkey might be temporarily occupied.
 
 ### Hotkey Editor
 
@@ -179,18 +175,6 @@ static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
 
 This guarantees there is never a gap where the old hotkey is unregistered but the new one hasn't been registered yet.
 
-### Compatibility Mode (Fallback)
-
-An opt-in fallback when `RegisterHotKey` can't claim the desired key:
-
-- A dedicated thread runs a `GetMessage` loop with a `WH_KEYBOARD_LL` hook.
-- `GetMessage` blocks the thread — **zero CPU** when no keys are pressed.
-- The hook thread is completely independent of the render thread — frame-sleep does not affect it.
-- Per-binding entries (`compat_binding_t`) carry VK, modifiers, and a `volatile LONG*` signal pointer.
-- On match, `InterlockedExchange` sets the same signal flags used by the `WM_HOTKEY` path.
-
-**Note**: `WH_KEYBOARD_LL` hooks can trigger simultaneously in multiple applications. The settings UI shows an orange warning when compatibility mode is active.
-
 ### Config Persistence
 
 ```
@@ -198,7 +182,6 @@ hotkey_toggle_vk=80   (0x50 = 'P')
 hotkey_toggle_mods=3  (MOD_CONTROL | MOD_SHIFT)
 hotkey_show_vk=72     (0x48 = 'H')
 hotkey_show_mods=3
-hotkey_compat_mode=0
 ```
 
 Saved/loaded alongside all other settings. Reset All Settings restores defaults.
@@ -335,7 +318,7 @@ No changes to the GLFW submodule required.
 | File | Purpose |
 |---|---|
 | `src/plugin.c` | Mumble plugin entry point, callbacks, main/render thread management |
-| `src/overlay_window.c` | GLFW window, ImGui rendering, settings panel, frame limiter, hotkey system (RegisterHotKey + compat hook) |
+| `src/overlay_window.c` | GLFW window, ImGui rendering, settings panel, frame limiter, hotkey system (RegisterHotKey) |
 | `src/overlay_window.h` | Config struct, public API |
 | `src/speaking_users.c` | Thread-safe speaking user list (mutex-protected) |
 | `src/speaking_users.h` | Speaking user API |

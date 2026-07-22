@@ -162,7 +162,7 @@ static double  g_last_frame_time       = 0.0;
 /* ---- Idle detection for fps_idle ---- */
 static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse move/click/scroll */
 
-/* ---- Global hotkeys: RegisterHotKey (primary) + compat-mode hook thread ---- */
+/* ---- Global hotkeys: RegisterHotKey ---- */
 #define HOTKEY_ID_TOGGLE        100
 #define HOTKEY_ID_SHOW          101
 #define HOTKEY_ID_TOGGLE_STAGING 102  /* staging slot for atomic swap */
@@ -170,11 +170,6 @@ static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse 
 
 static volatile LONG g_hotkey_toggle_passthrough = 0;
 static volatile LONG g_hotkey_show_window        = 0;
-
-/* Compatibility-mode low-level keyboard hook thread (opt-in, only for conflicted hotkeys) */
-static HHOOK  g_compat_hook       = NULL;
-static HANDLE g_compat_hook_thread = NULL;
-static volatile bool g_compat_hook_running = false;
 
 /* WNDPROC for subclassing */
 static WNDPROC g_prev_wndproc       = NULL;
@@ -185,8 +180,6 @@ static void apply_config_to_window(void);
 static void on_window_close(GLFWwindow *win);
 static void register_all_hotkeys(void);
 static void unregister_all_hotkeys(void);
-static void start_compat_hook_thread(void);
-static void stop_compat_hook_thread(void);
 
 static float clamp01f(float v);
 static ImVec4 with_text_alpha(ImVec4 color);
@@ -237,7 +230,7 @@ static void load_cjk_font(void) {
 }
 
 /* ========================================================================
- * Global hotkeys — RegisterHotKey + compat-mode hook thread
+ * Global hotkeys — RegisterHotKey
  * ======================================================================== */
 
 /* Convert a Win32 VK + modifiers to a RegisterHotKey call. MOD_NOREPEAT
@@ -278,98 +271,6 @@ static bool replace_registered_hotkey(HWND hwnd, int active_id, int staging_id,
     UnregisterHotKey(hwnd, active_id);
     /* Active/staging IDs are now swapped logically — caller tracks which is which. */
     return true;
-}
-
-/* ---- Compatibility-mode hook thread ---- */
-
-/* Per-binding fallback entry for the hook thread */
-typedef struct compat_binding_t {
-    int  vk;
-    UINT mods;
-    volatile LONG *signal;
-} compat_binding_t;
-
-static compat_binding_t g_compat_bindings[2];
-static int              g_compat_binding_count = 0;
-
-static LRESULT CALLBACK compat_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-        const KBDLLHOOKSTRUCT *kb = (const KBDLLHOOKSTRUCT *)lParam;
-
-        bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        bool shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
-        bool alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
-        bool super = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
-                   || (GetAsyncKeyState(VK_RWIN)   & 0x8000) != 0;
-
-        UINT active = 0;
-        if (ctrl)  active |= MOD_CONTROL;
-        if (shift) active |= MOD_SHIFT;
-        if (alt)   active |= MOD_ALT;
-        if (super) active |= MOD_WIN;
-
-        for (int i = 0; i < g_compat_binding_count; i++) {
-            if ((UINT)kb->vkCode == (UINT)g_compat_bindings[i].vk
-                && active == g_compat_bindings[i].mods) {
-                InterlockedExchange(g_compat_bindings[i].signal, 1);
-            }
-        }
-    }
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-}
-
-static DWORD WINAPI compat_hook_thread_proc(LPVOID) {
-    g_compat_hook = SetWindowsHookEx(WH_KEYBOARD_LL, compat_hook_proc,
-                                     GetModuleHandle(NULL), 0);
-    if (g_compat_hook == NULL) {
-        g_compat_hook_running = false;
-        return 1;
-    }
-
-    MSG msg;
-    while (g_compat_hook_running) {
-        /* GetMessage blocks the thread, zero CPU — only wakes on hook events. */
-        if (GetMessage(&msg, NULL, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
-
-    UnhookWindowsHookEx(g_compat_hook);
-    g_compat_hook = NULL;
-    return 0;
-}
-
-static void start_compat_hook_thread(void) {
-    if (g_compat_hook_thread != NULL) return;
-
-    /* Populate fallback bindings from config */
-    g_compat_binding_count = 0;
-    if (g_config.hotkey_toggle_vk != 0) {
-        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_toggle_vk;
-        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_toggle_mods;
-        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_toggle_passthrough;
-        g_compat_binding_count++;
-    }
-    if (g_config.hotkey_show_vk != 0) {
-        g_compat_bindings[g_compat_binding_count].vk     = g_config.hotkey_show_vk;
-        g_compat_bindings[g_compat_binding_count].mods   = (UINT)g_config.hotkey_show_mods;
-        g_compat_bindings[g_compat_binding_count].signal = &g_hotkey_show_window;
-        g_compat_binding_count++;
-    }
-
-    g_compat_hook_running = true;
-    g_compat_hook_thread = CreateThread(NULL, 0, compat_hook_thread_proc, NULL, 0, NULL);
-}
-
-static void stop_compat_hook_thread(void) {
-    if (g_compat_hook_thread == NULL) return;
-    g_compat_hook_running = false;
-    PostThreadMessage(GetThreadId(g_compat_hook_thread), WM_NULL, 0, 0);
-    WaitForSingleObject(g_compat_hook_thread, 2000);
-    CloseHandle(g_compat_hook_thread);
-    g_compat_hook_thread = NULL;
-    g_compat_binding_count = 0;
 }
 
 /* ========================================================================
@@ -460,7 +361,6 @@ overlay_config_t overlay_config_default(void) {
     cfg.hotkey_toggle_mods = MOD_CONTROL | MOD_SHIFT;
     cfg.hotkey_show_vk     = 'H';
     cfg.hotkey_show_mods   = MOD_CONTROL | MOD_SHIFT;
-    cfg.hotkey_compat_mode = false;
     return cfg;
 }
 
@@ -531,7 +431,6 @@ static void overlay_config_save(void) {
     fprintf(f, "hotkey_toggle_mods=%d\n",  g_config.hotkey_toggle_mods);
     fprintf(f, "hotkey_show_vk=%d\n",     g_config.hotkey_show_vk);
     fprintf(f, "hotkey_show_mods=%d\n",    g_config.hotkey_show_mods);
-    fprintf(f, "hotkey_compat_mode=%d\n",   g_config.hotkey_compat_mode ? 1 : 0);
     fclose(f);
 }
 
@@ -613,7 +512,7 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "hotkey_toggle_mods=%d", &ival) == 1)  cfg->hotkey_toggle_mods = ival;
         else if (sscanf(line, "hotkey_show_vk=%d", &ival) == 1)     cfg->hotkey_show_vk = ival;
         else if (sscanf(line, "hotkey_show_mods=%d", &ival) == 1)    cfg->hotkey_show_mods = ival;
-        else if (sscanf(line, "hotkey_compat_mode=%d", &ival) == 1)  cfg->hotkey_compat_mode = (ival != 0);
+        /* hotkey_compat_mode is no longer supported — silently ignore if present in old configs */
     }
     fclose(f);
 }
@@ -671,7 +570,6 @@ int overlay_window_init(const overlay_config_t *cfg) {
             g_config.hotkey_show_vk     = cfg->hotkey_show_vk;
             g_config.hotkey_show_mods   = cfg->hotkey_show_mods;
         }
-        g_config.hotkey_compat_mode = cfg->hotkey_compat_mode;
     }
     detect_system_language();
 
@@ -781,20 +679,16 @@ int overlay_window_init(const overlay_config_t *cfg) {
     apply_config_to_window();
 
     /* Register global hotkeys via RegisterHotKey (zero-latency, no hook overhead).
-     * Check for conflicts — if any hotkey fails and compatibility mode is off,
-     * set a flag to auto-popup the settings panel on the first frame. */
+     * Check for conflicts — if any hotkey fails, auto-popup settings on first frame. */
     {
         HWND hwnd = glfwGetWin32Window(g_window);
         bool ok_toggle = register_one_hotkey(hwnd, HOTKEY_ID_TOGGLE,
             g_config.hotkey_toggle_vk, g_config.hotkey_toggle_mods);
         bool ok_show   = register_one_hotkey(hwnd, HOTKEY_ID_SHOW,
             g_config.hotkey_show_vk, g_config.hotkey_show_mods);
-        if ((!ok_toggle || !ok_show) && !g_config.hotkey_compat_mode) {
+        if (!ok_toggle || !ok_show) {
             g_hotkey_conflict_on_init = true;
         }
-    }
-    if (g_config.hotkey_compat_mode) {
-        start_compat_hook_thread();
     }
 
     g_first_frame = true;
@@ -1394,9 +1288,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             }
             g_first_frame = false;
 
-            /* Auto-popup settings on first launch if RegisterHotKey failed (conflict)
-             * and compatibility mode is not enabled. Only on the very first frame,
-             * never during gameplay. */
+            /* Auto-popup settings on first launch if RegisterHotKey failed (conflict).
+             * Only on the very first frame, never during gameplay. */
             if (g_hotkey_conflict_on_init) {
                 g_hotkey_conflict_on_init = false;
                 g_settings_open = true;
@@ -1639,8 +1532,7 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                                         /* Re-register hotkeys on change */
                                         unregister_all_hotkeys();
                                         register_all_hotkeys();
-                                        /* If compat mode is off, clear conflict flag
-                                         * (new key may not conflict) */
+                                        /* Clear conflict flag — new key may not conflict */
                                         g_hotkey_conflict_on_init = false;
                                     }
                                     break;
@@ -1655,25 +1547,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 hotkey_button("显示窗口", "Show Window",
                     &g_config.hotkey_show_vk, &g_config.hotkey_show_mods, 2);
 
-                /* Compatibility mode checkbox */
-                if (ImGui::Checkbox(LOC("兼容模式", "Compatibility mode"),
-                                    &g_config.hotkey_compat_mode)) {
-                    settings_changed = true;
-                    if (g_config.hotkey_compat_mode) {
-                        start_compat_hook_thread();
-                    } else {
-                        stop_compat_hook_thread();
-                    }
-                }
-                if (g_config.hotkey_compat_mode) {
-                    ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.15f, 1.0f),
-                        LOC("兼容模式下快捷键可能与其他程序同时触发。",
-                            "Hotkeys may trigger in other apps simultaneously in this mode."));
-                } else {
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("快捷键被占用时，请更换组合键或启用兼容模式。",
-                            "If the hotkey is occupied, change the combination or enable compatibility mode."));
-                }
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                    LOC("快捷键被占用时，请更换组合键。",
+                        "If the hotkey is occupied, change the key combination."));
             }
 
             ImGui::Separator();
@@ -1825,10 +1701,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.hotkey_toggle_mods = def.hotkey_toggle_mods;
                 g_config.hotkey_show_vk     = def.hotkey_show_vk;
                 g_config.hotkey_show_mods   = def.hotkey_show_mods;
-                g_config.hotkey_compat_mode = def.hotkey_compat_mode;
                 /* Re-register all hotkeys with defaults */
                 unregister_all_hotkeys();
-                stop_compat_hook_thread();
                 register_all_hotkeys();
                 /* Re-detect when resetting all settings */
                 overlay_apply_auto_refresh();
@@ -2087,8 +1961,6 @@ void overlay_window_shutdown(void) {
     }
     cleanup_time_period();
 
-    /* Stop compat-mode hook thread before unregistering hotkeys */
-    stop_compat_hook_thread();
     unregister_all_hotkeys();
 
     if (g_window != NULL) {

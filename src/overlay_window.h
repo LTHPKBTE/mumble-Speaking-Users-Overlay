@@ -53,7 +53,6 @@ typedef struct {
     int   hotkey_toggle_mods;     /* MOD_CONTROL / MOD_SHIFT / MOD_ALT / MOD_WIN */
     int   hotkey_show_vk;         /* Win32 virtual-key code for show window (0 = unset) */
     int   hotkey_show_mods;       /* MOD_CONTROL / MOD_SHIFT / MOD_ALT / MOD_WIN */
-    bool  hotkey_compat_mode;     /* enable WH_KEYBOARD_LL fallback for conflicted hotkeys */
 } overlay_config_t;
 
 /* Get default configuration */
