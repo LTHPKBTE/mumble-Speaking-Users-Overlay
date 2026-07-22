@@ -95,6 +95,10 @@ static volatile bool    g_display_changed       = false;
 /* ---- RegisterHotKey conflict flag — triggers settings auto-popup on first frame ---- */
 static volatile bool    g_hotkey_conflict_on_init = false;
 
+/* ---- Legacy VSync flag — old config had VSync on; force off + warn on first frame ---- */
+static volatile bool    g_vsync_legacy_warning    = false;
+static bool             g_was_legacy_upgrade      = false;  /* persists after popup, for UI warning */
+
 /* ---- Optimization: cached values to avoid redundant work ---- */
 static bool   g_last_topmost     = true;    /* last always_on_top for viewport mgmt */
 
@@ -427,9 +431,15 @@ static void overlay_config_save(void) {
     fclose(f);
 }
 
+/* Set to true by overlay_config_load when legacy config keys are detected.
+ * Used to force VSync off on upgrade (old configs often had it enabled, which
+ * causes high CPU usage from GPU driver busy-wait). */
+static bool g_config_is_legacy = false;
+
 static void overlay_config_load(overlay_config_t *cfg) {
     /* Start from defaults, then override from file if it exists */
     *cfg = overlay_config_default();
+    g_config_is_legacy = false;
 
     const char *cfg_path = overlay_config_path();
     if (!cfg_path) {
@@ -475,17 +485,15 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "mumble_logging_enabled=%d", &ival) == 1) cfg->mumble_logging_enabled = (ival != 0);
         else if (sscanf(line, "debug_show_fps=%d", &ival) == 1) cfg->debug_show_fps = (ival != 0);
         else if (sscanf(line, "custom_fps_enabled=%d", &ival) == 1) {
-            /* backward compat: old flag → modern split config */
-            if (ival != 0) {
-                /* Old: custom framerate ON (= vsync off + limit FPS) */
-                cfg->vsync_enabled = false;
-                cfg->fps_passthrough  = 15;
-                cfg->fps_clickable    = 60;
-                cfg->fps_settings_open = 60;
-            } else {
-                /* Old: custom framerate OFF (= vsync on) */
-                cfg->vsync_enabled = true;
-            }
+            /* backward compat: old flag → modern split config.
+             * VSync is forced off on legacy upgrade regardless of old setting
+             * — GPU driver busy-wait at high refresh rates makes it undesirable
+             * for an overlay. The user can re-enable it in settings if desired. */
+            g_config_is_legacy = true;
+            cfg->fps_passthrough  = 15;
+            cfg->fps_clickable    = 60;
+            cfg->fps_settings_open = 60;
+            /* vsync stays at default (false) */
         }
         else if (sscanf(line, "custom_fps_value=%d", &ival) == 1) {
             /* backward compat: apply old single-value setting to modern split config */
@@ -550,6 +558,15 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.fps_clickable      = cfg->fps_clickable;
         g_config.fps_settings_open  = cfg->fps_settings_open;
         g_config.auto_detect_refresh = cfg->auto_detect_refresh;
+
+        /* Legacy config upgrade: force VSync off. Old configs often had it
+         * enabled, which causes high CPU usage from GPU driver busy-wait.
+         * The first frame will pop up settings with a notice. */
+        if (g_config_is_legacy) {
+            g_config.vsync_enabled = false;
+            g_vsync_legacy_warning = true;
+        }
+
         if (cfg->hotkey_toggle_vk != 0 || cfg->hotkey_toggle_mods != 0) {
             g_config.hotkey_toggle_vk   = cfg->hotkey_toggle_vk;
             g_config.hotkey_toggle_mods = cfg->hotkey_toggle_mods;
@@ -1265,10 +1282,16 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
             }
             g_first_frame = false;
 
-            /* Auto-popup settings on first launch if RegisterHotKey failed (conflict).
+            /* Auto-popup settings on first launch if:
+             * - RegisterHotKey failed (conflict), or
+             * - Config was upgraded from a legacy version (VSync forced off).
              * Only on the very first frame, never during gameplay. */
-            if (g_hotkey_conflict_on_init) {
+            if (g_hotkey_conflict_on_init || g_vsync_legacy_warning) {
+                if (g_vsync_legacy_warning) {
+                    g_was_legacy_upgrade = true;
+                }
                 g_hotkey_conflict_on_init = false;
+                g_vsync_legacy_warning    = false;
                 g_settings_open = true;
             }
         }
@@ -1541,8 +1564,13 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 if (g_config.vsync_enabled) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-                        LOC("⚠ 部分系统上VSync可能导致高CPU占用",
-                            "⚠ VSync may cause high CPU usage on some systems"));
+                        LOC("部分系统上VSync可能导致高CPU占用",
+                            "VSync may cause high CPU usage on some systems"));
+                }
+                if (g_was_legacy_upgrade) {
+                    ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
+                        LOC("已从旧版配置升级，垂直同步已自动关闭。如需开启请手动勾选。",
+                            "Upgraded from an older config — VSync was turned off. Re-enable above if needed."));
                 }
 
                 /* Auto-detect monitor refresh rate */

@@ -29,6 +29,15 @@ The effective target FPS is recalculated every frame based on the overlay's curr
 
 When VSync is enabled (`vsync_enabled = true`), all FPS profiles are ignored and `glfwSwapInterval(1)` is used instead.
 
+### Legacy Config Upgrade (VSync)
+
+Old versions of the plugin stored framerate settings under a different key (`custom_fps_enabled`). When a legacy config file is detected on load:
+
+- VSync is **forced off** regardless of the old setting — the GPU driver busy-wait behaviour (see [GPU Driver VSync Busy-Wait](#gpu-driver-vsync-busy-wait)) makes it undesirable for an overlay at typical refresh rates.
+- The settings panel auto-opens on the first frame with a notice.
+- The user can re-enable VSync in the settings panel if desired; the new choice is saved normally and not overridden on subsequent launches.
+- Detection is based on the presence of the `custom_fps_enabled` key in the config file — once the file is saved in the new format that key is no longer written.
+
 ### Auto-Detect Monitor Refresh Rate
 
 When `auto_detect_refresh` is enabled (default):
