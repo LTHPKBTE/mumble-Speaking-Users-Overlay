@@ -25,7 +25,6 @@
 
 #include <windows.h>
 #include <mmsystem.h>    /* timeBeginPeriod / timeEndPeriod for fallback timer */
-#include <intrin.h>      /* _mm_pause for spin-wait */
 #pragma comment(lib, "winmm.lib")
 
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -142,22 +141,6 @@ static void prof_tick(void) {
 static HANDLE  g_frame_timer = NULL;
 static bool    g_using_time_period = false;  /* true if fallback timer needed timeBeginPeriod */
 static void cleanup_time_period(void);  /* forward decl — defined near shutdown */
-
-/* ---- Dynamic spin-wait margin for two-phase frame pacing (plan.txt research) ----
- * Initial margin: 300 us. After each WaitForSingleObject, actual late-wake time
- * is measured and fed into an EMA. The margin auto-adjusts within [100 us, 2 ms]
- * so it tracks the system's real scheduler jitter over time.
- *
- * A 50 us safety buffer is added to the EMA to avoid consistently cutting it close.
- * On heavily loaded systems the margin will drift up; on quiet systems it decays
- * toward the 100 us floor — minimising CPU waste in both cases. */
-static double   g_spin_margin       = 0.0003;   /* current effective margin (s) */
-static double   g_spin_ema          = 0.0;      /* EMA of observed late-wake (s) */
-static uint64_t g_spin_samples      = 0;
-#define SPIN_MARGIN_MIN    0.0001   /* 100 us — don't drop below */
-#define SPIN_MARGIN_MAX    0.0020   /*   2 ms — don't absorb extreme preemption */
-#define SPIN_MARGIN_ALPHA  0.02     /* EMA smoothing (plan.txt recommendation) */
-#define SPIN_MARGIN_BUFFER 0.00005  /*  50 us safety on top of EMA */
 
 /* ---- Current effective target interval (determined each frame from priority rules) ---- */
 static double  g_frame_target_interval = 0.0;
@@ -1848,71 +1831,39 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         g_frame_target_interval = 1.0 / (double)target_fps;
     }
 
-    /* ---- Two-phase frame pacing (plan.txt research) ----
-     * Phase 1: Sleep via waitable timer until g_spin_margin before deadline.
-     * Phase 2: Spin _mm_pause() for the final margin to absorb scheduler jitter.
-     * The spin margin auto-adjusts via EMA of measured late-wake times.
+    /* ---- Frame pacing via high-resolution waitable timer ----
+     * Sleeps the full remaining time in a single SetWaitableTimer call.
+     * The timer has sub-ms precision on Win10 1803+; any late-wake jitter
+     * (typically < 1 ms) is absorbed by g_last_frame_time resetting to the
+     * actual wall-clock time — it does not accumulate across frames.
      * Fallback: Sleep() when no waitable timer is available (extremely rare). */
     if (g_frame_target_interval > 0.0) {
         double now = glfwGetTime();
         if (g_last_frame_time > 0.0) {
-            double deadline  = g_last_frame_time + g_frame_target_interval;
-            double remaining = deadline - now;
+            double remaining = g_last_frame_time + g_frame_target_interval - now;
 
-            if (remaining > g_spin_margin) {
-                double sleep_duration = remaining - g_spin_margin;
-
+            if (remaining > 0.0) {
                 if (g_frame_timer != NULL) {
-                    /* High-precision path: SetWaitableTimer with 100ns units.
+                    /* SetWaitableTimer with 100ns units.
                      * Negative QuadPart = relative time. */
                     LARGE_INTEGER due;
-                    due.QuadPart = (LONGLONG)(sleep_duration * -10000000.0);
+                    due.QuadPart = (LONGLONG)(remaining * -10000000.0);
                     if (due.QuadPart == 0) {
                         due.QuadPart = -1;  /* minimum non-zero relative time */
                     }
                     SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
                     WaitForSingleObject(g_frame_timer, INFINITE);
-
-                    /* Measure how late the timer actually woke us up
-                     * and feed it into an EMA to auto-tune g_spin_margin. */
-                    double post_sleep  = glfwGetTime();
-                    double actual_sleep = post_sleep - now;
-                    double late = actual_sleep - sleep_duration;
-                    double clamped_late = (late > 0.0) ? late : 0.0;
-
-                    if (g_spin_samples == 0) {
-                        g_spin_ema = clamped_late;
-                    } else {
-                        g_spin_ema = g_spin_ema * (1.0 - SPIN_MARGIN_ALPHA)
-                                   + clamped_late * SPIN_MARGIN_ALPHA;
-                    }
-                    g_spin_samples++;
-
-                    g_spin_margin = g_spin_ema + SPIN_MARGIN_BUFFER;
-                    if (g_spin_margin < SPIN_MARGIN_MIN) g_spin_margin = SPIN_MARGIN_MIN;
-                    if (g_spin_margin > SPIN_MARGIN_MAX) g_spin_margin = SPIN_MARGIN_MAX;
                 } else {
                     /* Last-resort fallback: Sleep().
                      * On modern Windows with timeBeginPeriod(1) this gives ~1ms
                      * granularity. Without it, ~15.6ms — but this path is only
                      * reached if BOTH CreateWaitableTimerExW and CreateWaitableTimer
                      * failed, which is extremely unlikely. */
-                    DWORD sleep_ms = (DWORD)(sleep_duration * 1000.0);
+                    DWORD sleep_ms = (DWORD)(remaining * 1000.0);
                     if (sleep_ms > 0) {
                         Sleep(sleep_ms);
                     }
                 }
-            }
-
-            /* Phase 2: Spin-wait the final margin to hit the deadline precisely.
-             * _mm_pause() hints the CPU to avoid memory-order mis-speculation
-             * and reduces power consumption during the spin loop.
-             *
-             * If we were preempted (e.g. high-priority process stole the CPU),
-             * glfwGetTime() will already be past the deadline — the loop exits
-             * immediately with zero wasted cycles. */
-            while (glfwGetTime() < deadline) {
-                _mm_pause();
             }
         }
         g_last_frame_time = glfwGetTime();
