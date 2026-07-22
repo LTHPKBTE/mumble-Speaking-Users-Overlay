@@ -159,9 +159,6 @@ static uint64_t g_spin_samples      = 0;
 static double  g_frame_target_interval = 0.0;
 static double  g_last_frame_time       = 0.0;
 
-/* ---- Idle detection for fps_idle ---- */
-static double  g_last_user_input_time = 0.0;  /* ImGui::GetTime() of last mouse move/click/scroll */
-
 /* ---- Global hotkeys: RegisterHotKey ---- */
 #define HOTKEY_ID_TOGGLE        100
 #define HOTKEY_ID_SHOW          101
@@ -354,8 +351,6 @@ overlay_config_t overlay_config_default(void) {
     cfg.fps_passthrough  = 15;
     cfg.fps_clickable    = 60;
     cfg.fps_settings_open = 60;
-    cfg.fps_idle         = 4;
-    cfg.idle_fps_timeout = 5.0f;
     cfg.auto_detect_refresh = true;
     cfg.hotkey_toggle_vk   = 'P';
     cfg.hotkey_toggle_mods = MOD_CONTROL | MOD_SHIFT;
@@ -424,8 +419,6 @@ static void overlay_config_save(void) {
     fprintf(f, "fps_passthrough=%d\n", g_config.fps_passthrough);
     fprintf(f, "fps_clickable=%d\n", g_config.fps_clickable);
     fprintf(f, "fps_settings_open=%d\n", g_config.fps_settings_open);
-    fprintf(f, "fps_idle=%d\n", g_config.fps_idle);
-    fprintf(f, "idle_fps_timeout=%.1f\n", (double)g_config.idle_fps_timeout);
     fprintf(f, "auto_detect_refresh=%d\n", g_config.auto_detect_refresh ? 1 : 0);
     fprintf(f, "hotkey_toggle_vk=%d\n",   g_config.hotkey_toggle_vk);
     fprintf(f, "hotkey_toggle_mods=%d\n",  g_config.hotkey_toggle_mods);
@@ -489,8 +482,6 @@ static void overlay_config_load(overlay_config_t *cfg) {
                 cfg->fps_passthrough  = 15;
                 cfg->fps_clickable    = 60;
                 cfg->fps_settings_open = 60;
-                cfg->fps_idle         = 4;
-                cfg->idle_fps_timeout = 5.0f;
             } else {
                 /* Old: custom framerate OFF (= vsync on) */
                 cfg->vsync_enabled = true;
@@ -505,14 +496,13 @@ static void overlay_config_load(overlay_config_t *cfg) {
         else if (sscanf(line, "fps_passthrough=%d", &ival) == 1) cfg->fps_passthrough = ival;
         else if (sscanf(line, "fps_clickable=%d", &ival) == 1) cfg->fps_clickable = ival;
         else if (sscanf(line, "fps_settings_open=%d", &ival) == 1) cfg->fps_settings_open = ival;
-        else if (sscanf(line, "fps_idle=%d", &ival) == 1) cfg->fps_idle = ival;
-        else if (sscanf(line, "idle_fps_timeout=%f", &fval) == 1) cfg->idle_fps_timeout = fval;
         else if (sscanf(line, "auto_detect_refresh=%d", &ival) == 1) cfg->auto_detect_refresh = (ival != 0);
         else if (sscanf(line, "hotkey_toggle_vk=%d", &ival) == 1)   cfg->hotkey_toggle_vk = ival;
         else if (sscanf(line, "hotkey_toggle_mods=%d", &ival) == 1)  cfg->hotkey_toggle_mods = ival;
         else if (sscanf(line, "hotkey_show_vk=%d", &ival) == 1)     cfg->hotkey_show_vk = ival;
         else if (sscanf(line, "hotkey_show_mods=%d", &ival) == 1)    cfg->hotkey_show_mods = ival;
-        /* hotkey_compat_mode is no longer supported — silently ignore if present in old configs */
+        /* hotkey_compat_mode, fps_idle, idle_fps_timeout are no longer
+         * supported — silently ignore if present in old configs */
     }
     fclose(f);
 }
@@ -559,8 +549,6 @@ int overlay_window_init(const overlay_config_t *cfg) {
         g_config.fps_passthrough    = cfg->fps_passthrough;
         g_config.fps_clickable      = cfg->fps_clickable;
         g_config.fps_settings_open  = cfg->fps_settings_open;
-        g_config.fps_idle           = cfg->fps_idle;
-        g_config.idle_fps_timeout   = cfg->idle_fps_timeout;
         g_config.auto_detect_refresh = cfg->auto_detect_refresh;
         if (cfg->hotkey_toggle_vk != 0 || cfg->hotkey_toggle_mods != 0) {
             g_config.hotkey_toggle_vk   = cfg->hotkey_toggle_vk;
@@ -874,17 +862,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     PROF_TICK();
-
-    /* ---- Idle detection: track last user input for fps_idle ---- */
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f
-            || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
-            || io.MouseWheel != 0.0f
-            || io.WantCaptureMouse) {
-            g_last_user_input_time = ImGui::GetTime();
-        }
-    }
 
     /* ---- Process display change (monitor resolution / refresh rate) ---- */
     if (g_display_changed) {
@@ -1608,8 +1585,8 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 };
 
                 ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                    LOC("优先级: 设置面板 > 可点击 > 无活动 > 穿透。范围 15-400。",
-                        "Priority: Settings panel > Clickable > Idle > Passthrough. Range 15-400."));
+                    LOC("优先级: 设置面板 > 可点击 > 穿透。范围 15-400。",
+                        "Priority: Settings panel > Clickable > Passthrough. Range 15-400."));
 
                 if (!g_config.vsync_enabled) {
                     bool auto_locked = g_config.auto_detect_refresh;
@@ -1617,26 +1594,12 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                     fps_input("点击穿透时 FPS", "Passthrough FPS", &g_config.fps_passthrough, false);
                     fps_input("可点击时 FPS", "Clickable FPS", &g_config.fps_clickable, auto_locked);
                     fps_input("打开设置时 FPS", "Settings FPS", &g_config.fps_settings_open, auto_locked);
-                    fps_input("无活动时 FPS", "Idle FPS", &g_config.fps_idle, false);
 
                     if (auto_locked) {
                         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
                             LOC("可点击/设置 FPS 由显示器刷新率自动决定。",
                                 "Clickable/Settings FPS auto-set from monitor refresh rate."));
                     }
-
-                    ImGui::Text(LOC("无活动超时(秒)", "Idle timeout (s)"));
-                    ImGui::SameLine(180.0f);
-                    ImGui::PushItemWidth(100.0f);
-                    if (ImGui::SliderFloat("##idle_timeout", &g_config.idle_fps_timeout, 1.0f, 120.0f, "%.0f")) {
-                        if (g_config.idle_fps_timeout < 1.0f) g_config.idle_fps_timeout = 1.0f;
-                        if (g_config.idle_fps_timeout > 120.0f) g_config.idle_fps_timeout = 120.0f;
-                        settings_changed = true;
-                    }
-                    ImGui::PopItemWidth();
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                        LOC("无鼠标活动超过此时间后降至无活动帧率",
-                            "Drop to idle FPS after no mouse activity for this duration"));
                 } else {
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
                         LOC("垂直同步启用时，上述帧率设置无效。",
@@ -1694,8 +1657,6 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
                 g_config.fps_passthrough    = def.fps_passthrough;
                 g_config.fps_clickable      = def.fps_clickable;
                 g_config.fps_settings_open  = def.fps_settings_open;
-                g_config.fps_idle           = def.fps_idle;
-                g_config.idle_fps_timeout   = def.idle_fps_timeout;
                 g_config.auto_detect_refresh = def.auto_detect_refresh;
                 g_config.hotkey_toggle_vk   = def.hotkey_toggle_vk;
                 g_config.hotkey_toggle_mods = def.hotkey_toggle_mods;
@@ -1850,16 +1811,9 @@ bool overlay_window_frame(overlay_poll_speakers_fn poll, void *userdata) {
         } else if (!g_config.mouse_passthrough) {
             /* Window is clickable (not in passthrough mode) */
             target_fps = g_config.fps_clickable;
-            /* Reset idle timer when window is clickable — user may interact */
-            g_last_user_input_time = ImGui::GetTime();
         } else {
-            /* Passthrough mode: check for idle timeout */
-            double idle_elapsed = ImGui::GetTime() - g_last_user_input_time;
-            if (g_config.idle_fps_timeout > 0.0f && idle_elapsed > (double)g_config.idle_fps_timeout) {
-                target_fps = g_config.fps_idle;
-            } else {
-                target_fps = g_config.fps_passthrough;
-            }
+            /* Passthrough mode */
+            target_fps = g_config.fps_passthrough;
         }
         if (target_fps < 1) target_fps = 1;
         if (target_fps > 400) target_fps = 400;

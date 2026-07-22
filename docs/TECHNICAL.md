@@ -25,8 +25,7 @@ The effective target FPS is recalculated every frame based on the overlay's curr
 |---|---|---|---|
 | 1 (highest) | Settings panel is open | `fps_settings_open` | 60 |
 | 2 | Window is clickable (not in passthrough mode) | `fps_clickable` | 60 |
-| 3 | Passthrough mode + no mouse activity for `idle_fps_timeout` seconds | `fps_idle` | 4 |
-| 4 (lowest) | Passthrough mode + recent mouse activity | `fps_passthrough` | 15 |
+| 3 (lowest) | Passthrough mode | `fps_passthrough` | 15 |
 
 When VSync is enabled (`vsync_enabled = true`), all FPS profiles are ignored and `glfwSwapInterval(1)` is used instead.
 
@@ -46,19 +45,6 @@ When `auto_detect_refresh` is enabled (default):
    - `WM_DISPLAYCHANGE` Windows message (resolution change, refresh rate change, monitor hot-plug)
    - **Reset All Settings** button
 5. `WM_DISPLAYCHANGE` is a low-frequency system event. It does **not** fire on window moves, DPI changes, or regular painting — no polling overhead.
-
-### Idle Detection
-
-Mouse activity is tracked per-frame via ImGui IO:
-
-```c
-ImGuiIO& io = ImGui::GetIO();
-if (io.MouseMoved || io.MouseDown[0..2] || io.WantCaptureMouse) {
-    g_last_user_input_time = ImGui::GetTime();
-}
-```
-
-The idle timeout only matters in **passthrough mode with the settings panel closed**. When the window is clickable, the idle timer is continuously reset (user may interact).
 
 ### Framerate Limiter Implementation
 
@@ -102,7 +88,7 @@ Two global hotkeys (Toggle Passthrough and Show Window) are configurable in the 
 
 ### WH_KEYBOARD_LL Limitations
 
-The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep (e.g., idle FPS = 4, meaning 250 ms sleeps), the hook chain could be blocked — `CallNextHookEx` might not execute until the render thread woke up. On affected systems, this could cause noticeable input lag for other applications.
+The old implementation installed a `WH_KEYBOARD_LL` hook on the render thread. When the frame limiter put the render thread to sleep, the hook chain could be blocked — `CallNextHookEx` might not execute until the render thread woke up. On affected systems, this could cause noticeable input lag for other applications.
 
 `RegisterHotKey` mitigates this: the kernel delivers `WM_HOTKEY` asynchronously via the message queue, with effectively no measurable latency on typical systems and no dependency on the render thread being awake.
 

@@ -49,8 +49,6 @@ Click the Settings button to open:
 | **Passthrough FPS** | Target frames per second when mouse passthrough is active (15-400). Default 15 |
 | **Clickable FPS** | Target FPS when the main window is interactive / clickable (15-400). Default 60, or auto-detected refresh rate |
 | **Settings FPS** | Target FPS when the settings panel is open (15-400, highest priority). Default 60, or auto-detected refresh rate |
-| **Idle FPS** | Target FPS when no mouse activity is detected for the idle timeout period (15-400). Default 4 |
-| **Idle timeout (s)** | Seconds of no mouse activity before dropping to idle FPS (1-120). Default 5 |
 | **Toggle Passthrough hotkey** | Click to capture a new key combination for disabling mouse passthrough |
 | **Show Window hotkey** | Click to capture a new key combination for showing a hidden window |
 | **Show Window** (button) | Re-show a hidden window |
@@ -80,7 +78,7 @@ When **Mouse passthrough** is enabled:
 
 ### Framerate Control
 
-The plugin uses multiple FPS profiles with priority-based switching and automatic monitor refresh rate detection. For implementation details (high-res timer, idle detection, GPU driver behaviour), see [Technical Notes](docs/TECHNICAL.md#framerate-control).
+The plugin uses multiple FPS profiles with priority-based switching and automatic monitor refresh rate detection. For implementation details (high-res timer, GPU driver behaviour), see [Technical Notes](docs/TECHNICAL.md#framerate-control).
 
 ### Speaker List Behavior
 
