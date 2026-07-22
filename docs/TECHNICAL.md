@@ -62,7 +62,7 @@ The idle timeout only matters in **passthrough mode with the settings panel clos
 
 ### Framerate Limiter Implementation
 
-The limiter runs after `glfwSwapBuffers`, using **two-phase frame pacing** based on research in [plan.txt](../plan.txt):
+The limiter runs after `glfwSwapBuffers`, using **two-phase frame pacing**:
 
 1. Calculate effective target FPS from priority rules.
 2. Compute `deadline = last_frame_time + (1.0 / target_fps)`.
@@ -259,14 +259,14 @@ double actual_sleep = post_sleep - pre_sleep_time;
 double late         = actual_sleep - sleep_duration;   // >0 = woke up late
 double clamped_late = (late > 0.0) ? late : 0.0;       // early wake — no penalty
 
-// EMA update (α = 0.02, per plan.txt recommendation):
+// EMA update (α = 0.02):
 g_spin_ema  = g_spin_ema * 0.98 + clamped_late * 0.02;
 g_spin_margin = clamp(g_spin_ema + 50µs, 100µs, 2ms);
 ```
 
 | Parameter | Value | Purpose |
 |---|---|---|
-| Initial margin | 300 µs | plan.txt recommended starting point |
+| Initial margin | 300 µs | Starting point; auto-tunes from here |
 | EMA alpha (α) | 0.02 | Smooth adaptation — ~50 samples to mostly reflect new data |
 | Safety buffer | 50 µs | Provides headroom so the margin is not consistently cut too close |
 | Lower bound | 100 µs | Prevents margin decaying to zero on quiet systems |
