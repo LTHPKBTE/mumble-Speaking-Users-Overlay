@@ -62,18 +62,31 @@ The idle timeout only matters in **passthrough mode with the settings panel clos
 
 ### Framerate Limiter Implementation
 
-The limiter runs after `glfwSwapBuffers`:
+The limiter runs after `glfwSwapBuffers`, using **two-phase frame pacing** based on research in [plan.txt](../plan.txt):
 
 1. Calculate effective target FPS from priority rules.
-2. Compute `remaining = (1.0 / target_fps) - elapsed_since_last_frame`.
-3. If `remaining > 2 ms`: sleep via `SetWaitableTimer` + `WaitForSingleObject`.
+2. Compute `deadline = last_frame_time + (1.0 / target_fps)`.
+3. **Phase 1 — Sleep**: If `remaining > g_spin_margin`, sleep via `SetWaitableTimer` + `WaitForSingleObject` until `deadline - g_spin_margin`. This lets the thread sleep with low CPU usage between frames.
+4. **Phase 2 — Spin**: `while (glfwGetTime() < deadline) { _mm_pause(); }` helps absorb scheduler wake-up jitter for the final margin.
 
 ```c
-LARGE_INTEGER due;
-due.QuadPart = (LONGLONG)(remaining * -10000000.0);  // 100 ns units, negative = relative
-SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
-WaitForSingleObject(g_frame_timer, INFINITE);
+// Phase 1: Sleep until SPIN_MARGIN before deadline
+if (remaining > g_spin_margin) {
+    double sleep_duration = remaining - g_spin_margin;
+    LARGE_INTEGER due;
+    due.QuadPart = (LONGLONG)(sleep_duration * -10000000.0);  // 100ns units
+    SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE);
+    WaitForSingleObject(g_frame_timer, INFINITE);
+}
+// Phase 2: Spin the final margin
+while (glfwGetTime() < deadline) {
+    _mm_pause();
+}
 ```
+
+**Design rationale**: The previous approach slept the entire `remaining` time and had a fixed 2 ms threshold below which no waiting occurred. At higher refresh rates (144+ Hz), this 2 ms gap could occupy 29–48% of the frame budget with uncontrolled rendering. The two-phase approach sleeps as much as possible and only spin-waits a small tail (typically 100–500 µs), which tends to reduce CPU usage and frame jitter compared to the fixed-threshold approach.
+
+**Preemption behaviour**: If a high-priority process preempts the CPU during `WaitForSingleObject`, the thread may wake past the deadline. In that case the spin loop exits without additional waiting (`glfwGetTime() >= deadline`), and `g_last_frame_time` is reset to the actual wall-clock time. This helps prevent error from accumulating into subsequent frames.
 
 ### Hidden Window Low-Power Mode
 
@@ -220,9 +233,49 @@ atexit(cleanup_time_period);
 - `atexit(cleanup_time_period)` ensures `timeEndPeriod(1)` is called even on abnormal program exit (crash, `abort()`, etc.).
 - Normal shutdown also calls `cleanup_time_period()` via `overlay_window_shutdown()`.
 
+### Last-Resort Sleep() Fallback
+
+If **both** `CreateWaitableTimerExW` and `CreateWaitableTimer` fail (extremely unlikely):
+
+```c
+DWORD sleep_ms = (DWORD)(sleep_duration * 1000.0);
+if (sleep_ms > 0) { Sleep(sleep_ms); }
+```
+
+On systems with `timeBeginPeriod(1)` active this gives ~1 ms granularity; without it, ~15.6 ms. This path exists as a defensive fallback — in practice, at least `CreateWaitableTimer` succeeds on all supported Windows versions.
+
 ### Why Not Sleep()
 
-`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and increases power consumption. The waitable timer approach mitigates this on modern Windows (10 1803+).
+`Sleep(n)` has ~15.6 ms granularity by default, which is too coarse for framerate limiting (e.g., 60 FPS = 16.67 ms per frame). `timeBeginPeriod(1)` improves `Sleep()` to ~1 ms, but it's a system-wide setting that affects all applications and can increase power consumption. The waitable timer approach helps avoid this trade-off on modern Windows (10 1803+).
+
+### Dynamic Spin-Margin Auto-Tuning
+
+A fixed spin margin cannot adapt to varying system load. The limiter uses an **EMA (Exponential Moving Average)** to track observed scheduler late-wake times and adjust the margin over time:
+
+```c
+// Measured after WaitForSingleObject returns:
+double post_sleep   = glfwGetTime();
+double actual_sleep = post_sleep - pre_sleep_time;
+double late         = actual_sleep - sleep_duration;   // >0 = woke up late
+double clamped_late = (late > 0.0) ? late : 0.0;       // early wake — no penalty
+
+// EMA update (α = 0.02, per plan.txt recommendation):
+g_spin_ema  = g_spin_ema * 0.98 + clamped_late * 0.02;
+g_spin_margin = clamp(g_spin_ema + 50µs, 100µs, 2ms);
+```
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| Initial margin | 300 µs | plan.txt recommended starting point |
+| EMA alpha (α) | 0.02 | Smooth adaptation — ~50 samples to mostly reflect new data |
+| Safety buffer | 50 µs | Provides headroom so the margin is not consistently cut too close |
+| Lower bound | 100 µs | Prevents margin decaying to zero on quiet systems |
+| Upper bound | 2 ms | Caps CPU usage — single extreme preemption events are damped rather than permanently inflating the margin |
+
+**Expected behaviour over time**:
+- **Quiet system**: EMA decays toward 0 → margin settles near the 100 µs floor → low CPU spent spinning.
+- **Moderate load**: EMA tracks typical scheduler jitter (e.g. 150–400 µs) → margin follows with +50 µs headroom.
+- **Burst preemption**: A single large preemption is clamped by the 2 ms upper bound; the EMA only absorbs ~2% of it per sample, so the margin tends to recover within a few seconds.
 
 ---
 
@@ -233,7 +286,7 @@ When VSync is enabled (`glfwSwapInterval(1)`), the CPU waits in `glfwSwapBuffers
 - CPU usage pinned to 100% of one core at high refresh rates (e.g., 144 Hz).
 - The effect is especially pronounced for applications like overlays that have minimal GPU work per frame.
 
-Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming near-zero CPU between frames.
+Set `glfwSwapInterval(0)` (VSync off) and use the frame limiter instead. The limiter uses a proper OS waitable timer that puts the thread to sleep, consuming low CPU between frames.
 
 ## glfwSetWindowAttrib Wrapper
 
